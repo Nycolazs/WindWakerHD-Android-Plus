@@ -207,6 +207,12 @@
     <string name="opt_export_hint">Copia o save do jogo e os save states para uma pasta</string>
     <string name="opt_import">Importar saves</string>
     <string name="opt_import_hint">Restaura de uma pasta; importar um save do jogo reinicia o jogo</string>
+    <string name="opt_auto_backup">Backup automático do save</string>
+    <string name="opt_auto_backup_hint">Mantém uma cópia do seu save em Downloads/WindWakerHD Saves, que continua lá mesmo se o app for desinstalado</string>
+    <string name="restore_title">Restaurar seu save?</string>
+    <string name="restore_message">Ainda não há um save do jogo. Se você já jogou antes (numa versão anterior do app, ou tem um backup), escolha a pasta onde ele está: a pasta \"%1$s\" em Downloads tem os backups automáticos, ou escolha uma pasta para onde você exportou. Também dá para fazer isso depois em Opções > Saves > Importar saves.</string>
+    <string name="restore_new_game">Novo jogo</string>
+    <string name="restore_pick">Escolher pasta…</string>
     <string name="opt_graphics">Gráficos</string>
     <string name="opt_mods">Mods</string>
     <string name="opt_controls">Controles</string>
@@ -218,7 +224,7 @@
     <string name="opt_pad_hint">Controle: segure Select ou aperte Home para abrir e fechar · L / R trocam de aba · D-pad navega e muda valores · botão da direita seleciona · botão de baixo volta</string>
     <string name="lang_restart">O novo idioma vale quando o jogo reiniciar. O progresso desde o último save é perdido.</string>
     <string name="opt_fps">Taxa de quadros</string>
-    <string name="opt_fps_hint">60 fps mantém o jogo em velocidade normal de 30 a 60 fps, descartando quadros gerados atrasados. O adaptativo passa para 30 estáveis quando o aparelho não aguenta 60 e tenta de novo sozinho.</string>
+    <string name="opt_fps_hint">60 fps (gerado): o jogo roda nos seus 30 e cada quadro intermediário é criado pela GPU a partir do último (liso na maioria dos celulares; pode haver pequenos defeitos no HUD e nas bordas da tela). 60 fps desenha todos os quadros e precisa de um celular rápido. O adaptativo passa para 30 estáveis quando o aparelho não aguenta 60 e tenta de novo sozinho.</string>
     <string-array name="fps_modes">
         <item>30 fps</item>
         <item>60 fps</item>
@@ -226,6 +232,7 @@
         <item>True 60 (experimental)</item>
     </string-array>
     <string name="fps_40">40 fps (tela de 120 Hz)</string>
+    <string name="fps_generated">60 fps (gerado)</string>
     <string name="opt_layout_edit">Editar controles de toque</string>
     <string name="opt_layout_edit_hint">Mova e redimensione cada controle numa grade (também pelo botão ✎ ao lado do ≡)</string>
     <string name="layout_edit_hint">Arraste para mover · alça no canto ou pinça para redimensionar · 🗑 remove o controle selecionado · + traz de volta os removidos · Voltar cancela</string>
@@ -287,6 +294,8 @@
     <string name="opt_ao">Oclusão de ambiente</string>
     <string name="opt_ao_hires">Profundidade da oclusão em tamanho cheio</string>
     <string name="opt_aniso">Filtragem anisotrópica 16×</string>
+    <string name="opt_distant_shadows">Sombras distantes</string>
+    <string name="opt_distant_shadows_hint">As sombras ao longe. Desligado: menos trabalho para a GPU em florestas e áreas abertas, para celulares mais fracos</string>
     <string name="opt_perf">Painel de desempenho</string>
     <string name="opt_perf_hint">FPS, carga e temperaturas</string>
     <string name="opt_fg_choose_dll">Selecionar Lossless.dll</string>

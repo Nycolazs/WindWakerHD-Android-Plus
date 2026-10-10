@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <cmath>
 #include <tuple>
 // Guest surfaces <-> Vulkan images: render targets, depth buffers, sampled textures. Same rules as
@@ -126,9 +128,46 @@ static void target_aspect(const Surface* s, float& ax, float& ay) {
     target_aspect_factors(s->width, s->height, ax, ay);
 }
 
+// The factor a screen-shaped render target gets (ZeldaWWHDRecomp's Android work). The game's
+// post-processing buffers (960x540 and its reductions: 270, 135, 67/68, 33/34, 16/17 lines) hold
+// blurred, low-frequency pictures. On phones the bloom chain is drawn at half its size
+// (WWHD_BLOOM_SCALE, 0.25-1; 1 = as before), and above 1x the post buffers stay at the console's
+// size: the game's blurs on an upscaled buffer sample a whole guest texel per tap (area_sample.h),
+// which cost ~2 ms each at 1.5x on an Adreno 650. The 640x360 family (screen-space shadow mask,
+// depth copies) follows the scene: a smaller shadow mask bleeds shadow across characters' edges.
+static float env_scale(const char* name, float def, float lo, float hi) {
+    const char* e = getenv(name);
+    return e && *e ? std::clamp((float)atof(e), lo, hi) : def;
+}
+// format bit of a post-processing buffer: 1 R11G11B10F, 2 RGB10A2, 4 RGBA8, 8 RGBA16F (0: none)
+static int post_format_bit(const Surface* s) {
+    const uint32_t h = s->height;
+    if (s->sceneScale || s->fmt.depth || s->fmt.compressed || !(h == 540 || h == 270 || h == 135 || (h >= 16 && h <= 68))) return 0;
+    switch (s->fmt.format) {
+    case VK_FORMAT_B10G11R11_UFLOAT_PACK32: return 1;
+    case VK_FORMAT_A2B10G10R10_UNORM_PACK32: return 2;
+    case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB: return 4;
+    case VK_FORMAT_R16G16B16A16_SFLOAT: return 8;
+    default: return 0;
+    }
+}
+static float target_scale(const Surface* s) {
+    // which formats: WWHD_BLOOM_FORMATS (half size; default only the bloom chain proper, R11G11B10F:
+    // the RGB10A2 960x540 copy feeds the heat haze / depth of field, whose edges went blocky at half
+    // size) and WWHD_POST_FORMATS (kept at the console's size above 1x; default all of them)
+    static const float bloom = env_scale("WWHD_BLOOM_SCALE", 0.5f, 0.25f, 1.0f);
+    static const int bloomFormats = getenv("WWHD_BLOOM_FORMATS") ? atoi(getenv("WWHD_BLOOM_FORMATS")) : 1;
+    static const int postFormats = getenv("WWHD_POST_FORMATS") ? atoi(getenv("WWHD_POST_FORMATS")) : 0xF;
+    const float r = resolution_scale();
+    const int bit = post_format_bit(s);
+    if (!bit) return r;
+    if (bloom < 1.0f && (bloomFormats & bit)) return std::min(r, 1.0f) * bloom;
+    return (postFormats & bit) ? std::min(r, 1.0f) : r;
+}
+
 Surface* rescaled(Surface* s) {
     if (!s || !s->img.image || s->img.type != VK_IMAGE_TYPE_2D || s->mips > 1 || !screen_shaped(s)) return s;
-    float want = resolution_scale(), ax, ay;
+    float want = target_scale(s), ax, ay;
     target_aspect(s, ax, ay);
     if (std::fabs(s->rscale - want) < 1e-3f && s->ax == ax && s->ay == ay) return s;
     Image old = s->img;
@@ -193,8 +232,8 @@ bool create_surface_image(Surface* s, bool forRendering) {
     s->rscale = 1.0f;
     s->ax = s->ay = 1.0f;
     if (forRendering && type == VK_IMAGE_TYPE_2D && screen_shaped(s)) target_aspect(s, s->ax, s->ay);
-    if (forRendering && type == VK_IMAGE_TYPE_2D && (resolution_scale() != 1.0f || s->ax != 1.0f || s->ay != 1.0f) && screen_shaped(s)) {
-        s->rscale = resolution_scale();
+    if (forRendering && type == VK_IMAGE_TYPE_2D && screen_shaped(s) && (target_scale(s) != 1.0f || s->ax != 1.0f || s->ay != 1.0f)) {
+        s->rscale = target_scale(s);
         w = std::max<uint32_t>(1, (uint32_t)lroundf(s->width * s->rscale * s->ax));
         h = std::max<uint32_t>(1, (uint32_t)lroundf(s->height * s->rscale * s->ay));
     }

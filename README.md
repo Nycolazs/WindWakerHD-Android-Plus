@@ -54,6 +54,34 @@ Get the latest APK from the **[Releases page](../../releases/latest)**.
 
 ## What's new in Plus
 
+### ⚡ New in v1.6: performance and safer saves
+- **60 fps (generated)**, the new default frame rate. The game runs at its own 30 fps and every
+  other frame is made on the GPU from the last one. It uses the scene's depth and the camera's
+  movement, plus a motion search for things that move by themselves, like Link and enemies. The
+  HUD is kept exactly as the game drew it. On a Galaxy S20 FE it holds **~60 fps while moving even
+  in the heaviest places** (Gohma's room, Forest Haven, Hyrule), where the 60 fps mode, which draws every
+  frame, drops to 53–55. The game's speed is unchanged: it never speeds up or slows down.
+- **Steadier 60 fps mode**: one frame of buffering in the game's vsync wait, so a single slow
+  frame no longer drops the game into a run of 30 fps frames (Outset Island, standing: 51 → 60 fps).
+- **Less GPU work per frame** (−8 to −14%, Gohma's room 24.4 → 22.4 ms):
+  - Half-size bloom.
+  - Post-processing buffers stay at native size when you raise the resolution.
+  - The hidden GamePad picture is no longer drawn.
+  - Fewer render passes.
+  - A new **Graphics → Distant shadows** option skips the far shadow cascade on weak GPUs.
+- **Fewer stutters from the CPU side**: game files are decompressed natively with a cache, and the
+  game's busy-wait loops yield the CPU.
+- **Saves you don't lose**:
+  - **Automatic backup** of your game save to `Download/WindWakerHD Saves` on your phone. It
+    survives uninstalling the app and is updated whenever the game saved; you can turn it off in
+    **Saves**.
+  - On a fresh install with no save, the app **offers to restore it** from there.
+  - Export and import still work for any folder (and for saves from Cemu).
+- **Item menu arrows fixed** in widescreen: the first page no longer shows a left arrow and the
+  last page no longer shows a right arrow.
+- **Permanent release key**: from v1.6 on, every update installs over the previous version and
+  keeps your saves and settings.
+
 ### 🇧🇷 Brazilian Portuguese
 - **Built-in translation of the game** by [Triforce-Heroes](https://triforce-heroes.com.br) (v2025.08.05,
   100%). The APK carries only the translated texts and the changed font glyphs, as a 470 KB patch.
@@ -134,9 +162,15 @@ Put **one** of these in a folder on your phone (for example `Download/WindWakerH
    meanwhile; a notification shows the progress.
 4. The game starts. Have fun!
 
-> **Updating from an older build signed with another key?** Android won't install over it. First
-> export your saves (**Saves → Export saves**), uninstall the old app, install this one, then
-> import them.
+> **Updating from v1.5 or older?** Those builds were signed with a different key, so Android
+> won't install v1.6 over them. **This happens one last time:**
+> 1. In the old app, open **≡ → Saves → Export saves** and pick a folder (for example `Download`).
+> 2. Uninstall the old app, then install v1.6.
+> 3. Set up the game again. When it starts without a save, the app offers to restore one: pick the
+>    folder you exported to (or **Saves → Import saves** at any time).
+>
+> From v1.6 on, updates install over the app directly and keep everything. The automatic backup
+> in `Download/WindWakerHD Saves` is a second copy of your save.
 
 ---
 
@@ -180,14 +214,15 @@ Open the settings with **≡** (or hold Select / press Home on a controller).
 
 | Tab | Highlights |
 |---|---|
-| **Saves** | 5 save-state slots with pictures; import and export of your game saves |
+| **Saves** | 5 save-state slots with pictures; import and export of your game saves; **automatic save backup** |
 | **Game** | Game language, **App language**, Menu size |
-| **Graphics** | Frame rate (30 / 60 / 60 adaptive), CPU cores, rendering resolution, widescreen, screen layout, **HUD layout**, ambient occlusion, bloom, performance overlay, GPU driver, **GPU safe mode** |
+| **Graphics** | Frame rate (30 / **60 generated** / 60 / 60 adaptive), CPU cores, rendering resolution, widescreen, screen layout, **HUD layout**, ambient occlusion, bloom, **distant shadows**, performance overlay, GPU driver, **GPU safe mode** |
 | **Mods** | **Portuguese translation**, cheats, direct camera, first person on R3, climb any wall, quick doors, fast scene changes, fast-forward cutscenes and dialogue, faster running and swimming |
 | **Controls** | On-screen controls, **camera stick**, edit touch layout, camera speed, combat buttons, vibration, GamePad / Pro Controller mode, **motion controls**, rumble, controller buttons |
 
 ### Recommended settings
-- **Frame rate:** 60 fps (adaptive) — 60 where your phone can, a steady 30 where it can't.
+- **Frame rate:** 60 fps (generated), the default. It is smooth everywhere and only needs the
+  phone to run the game at 30. On a very fast phone you can try 60 fps, which draws every frame.
 - **CPU cores:** Prime core (game) — the default.
 - **Rendering resolution:** Original (720p) on mid-range or older phones; 1.5× (1080p) on
   recent flagship phones.
@@ -197,13 +232,23 @@ Open the settings with **≡** (or hold Select / press Home on a controller).
 
 ## Performance
 
-Measured on a **Galaxy S20 FE 5G** (Snapdragon 865 / Adreno 650), 60 fps (adaptive) mode, 720p:
+Measured on a **Galaxy S20 FE 5G** (Snapdragon 865 / Adreno 650) at 720p, walking and turning
+the camera. These are the frame rates actually shown on screen (SurfaceFlinger):
 
-| Area | Frame rate |
-|---|---|
-| Open sea, Windfall | 55–60 fps |
-| Outset Island | 53–57 fps |
-| Dragon Roost Island, dungeons | a steady 30 fps |
+| Area | 60 fps (generated) | 60 fps | v1.5, 60 fps (adaptive) |
+|---|---|---|---|
+| Outset Island | 60.0–60.3 | 53–55 | 53–57 |
+| Gohma's room (Dragon Roost Cavern) | 60.4 | ~53 | 30 |
+| Forest Haven | 60.3 | ~53 | 30 |
+| Hyrule | 60.4 | — | — |
+| Windfall | 59.7 | — | 55–60 |
+| Tower of the Gods | 59.5 | — | — |
+| Dragon Roost Cavern | 58.7 | — | 30 |
+| Forbidden Woods | 55.3 (short hitches while areas load) | — | 30 |
+
+GPU drivers (60 fps generated, moving): Qualcomm v676.53 gave 60.1 fps, v615 60.0, and the
+phone's own v502 59.8. Turnip (Mesa) drivers ran at 30–37 fps on this game, so keep a Qualcomm
+driver.
 
 Recent flagships (Snapdragon 8 Gen 2 and newer) hold 60 fps in most of the game. Phones get hot
 after a while and lower their clocks: playing while charging makes that worse.
@@ -218,6 +263,8 @@ after a while and lower their clocks: playing while charging makes that worse.
 | A custom GPU driver crashes | The app goes back to the system driver on the next start. |
 | "The game closed unexpectedly" | The app saves a crash log. Tap **Share crash log** and attach it to an [issue](../../issues). |
 | Stutter the first time you visit a place | Shaders are being compiled; it is smooth from then on. |
+| Small artifacts at the screen edges or around moving things in 60 fps (generated) | Those are the generated frames. Choose **60 fps** if your phone is fast enough, or **30 fps**. |
+| I lost my save after reinstalling | Open **≡ → Saves → Import saves** and pick `Download/WindWakerHD Saves`: the newest save there is used. |
 | The controller's gyro isn't used | Check **Controls → Motion controls**: it shows the sensors in use. Xbox controllers have no gyro, so the phone's sensors are used. |
 | Text is in English with the translation on | The translation replaces the English text: set **Game → Game language** to English and restart. |
 
@@ -234,7 +281,7 @@ ANDROID_NDK=$HOME/Android/Sdk/ndk/27.2.12479018 tools/android/build-llvm.sh
 
 cd android
 echo "sdk.dir=$HOME/Android/Sdk" > local.properties
-./gradlew assembleRelease -PwwhdDeviceRecomp -PwwhdVersionCode=11 -PwwhdVersionName=1.5
+./gradlew assembleRelease -PwwhdDeviceRecomp -PwwhdVersionCode=12 -PwwhdVersionName=1.6
 ```
 
 The APK is in `android/app/build/outputs/apk/release/`. Sign APKs you share with your own key

@@ -1,8 +1,8 @@
-#include <cmath>
-#include <chrono>
 // Android input: the Java side merges the on-screen controls, game controllers and a hardware
 // keyboard into one Wii U GamePad state (MainActivity / InputMapper) and hands it over here.
 #include <atomic>
+#include <chrono>
+#include <cmath>
 #include <mutex>
 #include <vector>
 
@@ -77,6 +77,20 @@ PadState read(bool consume) {
         uint64_t frame = gfx::current_frame();
         for (auto& p : script)
             if (frame >= p.from && frame <= p.to) s.buttons |= p.bits;
+    }
+    // test aid: WWHD_TEST_MOVE=s walks Link around in a 16 s loop with the camera turning, from s
+    // seconds after the start (stutter measurements in motion)
+    static const double moveAt = getenv("WWHD_TEST_MOVE") ? atof(getenv("WWHD_TEST_MOVE")) : -1;
+    if (moveAt >= 0) {
+        static const auto t0 = std::chrono::steady_clock::now();
+        const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() - moveAt;
+        if (t >= 0) {
+            const double ph = std::fmod(t, 16.0);
+            if (ph < 4) { s.ly = 1.0f; s.rx = 0.6f; }
+            else if (ph < 8) { s.lx = -1.0f; s.rx = -0.6f; }
+            else if (ph < 12) { s.ly = -1.0f; s.ry = 0.3f; }
+            else { s.lx = 1.0f; s.rx = 1.0f; }
+        }
     }
     s.touch = g_touch || g_touch_latched;
     g_touch_latched = false;

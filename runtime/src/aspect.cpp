@@ -580,6 +580,17 @@ extern "C" void hook_02877100(Cpu* c) {
         // a pane whose centre, without our offsets, is off the 16:9 screen stays hidden
         uint32_t child = pane, root = parent;
         for (int i = 0; i < 16 && ld32(root + kPaneParent); i++) { child = root; root = ld32(root + kPaneParent); }
+        // the item menu's page arrows: the game hides the one with no page beyond it (the left arrow on
+        // the first page, the right one on the last) by placing it just off the 16:9 screen, which the
+        // wider picture shows. They are placed in screen space (not slid with the pages): drawn only
+        // when they reach into the 16:9 screen
+        if (pane == child && ld32(pane + kPaneName) == 0x4C5F4D65 /* "L_Me" */ && !strncmp((const char*)mem::ptr(pane + kPaneName), "L_MenuArrow", 11) &&
+            !ld32(root + kPaneParent) && root_on_tv(root)) {
+            float gx = (float)ldf32(pane + kPaneGlobal + 0xC);
+            float hw = 0.5f * (float)ldf32(pane + kPaneSize) * std::fabs((float)ldf32(pane + kPaneGlobal));
+            if (!(hw >= 0.0f && hw < 4096.0f)) hw = 0.0f;
+            if (std::fabs(gx) - hw >= 640.0f) return;
+        }
         // not in the game's menus: the item menu slides its pages with the layout's view, not the
         // panes, so the page being shown has panes "beyond" the screen (they all vanished)
         if (!ld32(root + kPaneParent) && root_on_tv(root) && !interp::menu_open()) {

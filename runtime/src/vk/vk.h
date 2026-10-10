@@ -72,6 +72,7 @@ struct Surface {
     uint64_t lastDrawFrame = ~0ull;   // render targets: the last frame drawn into,
     uint32_t drawStreak = 0;          // and in how many consecutive frames up to it
     bool firstDrawFrame = false;      // lastDrawFrame is the first frame it was drawn into
+    bool sceneScale = false;          // private copies that must follow the scene's resolution (never the bloom size)
 };
 
 // A display output: the TV or the GamePad screen, composed into the Android surface.
@@ -141,6 +142,11 @@ VkDescriptorSet alloc_descriptor_set(VkDescriptorSetLayout layout);
 uint32_t& draws_since_commit();  // draws recorded since the last submission
 // make an image ready for `use` (records a barrier; ends the render pass if needed)
 void prepare(Image& img, Use use);
+// draws into the GamePad picture while no layout shows it are left out (vk_device.cpp)
+bool skip_hidden_drc_draw(uint32_t guestWidth, uint32_t guestHeight);
+// Graphics setting: the far shadow cascade drawn (vk_draw.cpp)
+bool distant_shadows();
+void set_distant_shadows(bool v);
 
 // a surface was added or its data size changed (invalidate's address index)
 void surfaces_changed();

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 # macOS: the `wwhd` executable (Metal). Android: `libwwhd.so` (Vulkan), loaded by the app in android/.
-if(APPLE)
+if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Android")  # APPLE is the host before project(): an Android build on a Mac too
   project(wwhd_recomp C CXX OBJCXX)
 else()
   project(wwhd_recomp C CXX ASM)
@@ -222,10 +222,12 @@ wwhd_hooks:
     .incbin \"${HOOKS_DIR}/hooks_mods.txt\"
     .byte 10
     .incbin \"${HOOKS_DIR}/hooks_aspect.txt\"
+    .byte 10
+    .incbin \"${HOOKS_DIR}/hooks_perf.txt\"
 wwhd_hooks_end:
 ")
     set_source_files_properties(${CMAKE_BINARY_DIR}/recomp_data.S PROPERTIES OBJECT_DEPENDS
-      "${OPS_BC};${HOOKS_DIR}/hooks.txt;${HOOKS_DIR}/hooks_climb.txt;${HOOKS_DIR}/hooks_mods.txt;${HOOKS_DIR}/hooks_aspect.txt;${HOOKS_DIR}/release_eur.txt;${HOOKS_DIR}/release_jpn.txt")
+      "${OPS_BC};${HOOKS_DIR}/hooks.txt;${HOOKS_DIR}/hooks_climb.txt;${HOOKS_DIR}/hooks_mods.txt;${HOOKS_DIR}/hooks_aspect.txt;${HOOKS_DIR}/hooks_perf.txt;${HOOKS_DIR}/release_eur.txt;${HOOKS_DIR}/release_jpn.txt")
 
     if(WWHD_DEVICE_RECOMP)
       # The game code is linked at startup (loader.cpp). The game functions the runtime calls

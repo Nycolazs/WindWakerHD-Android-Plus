@@ -75,6 +75,7 @@ bool ensure_core();   // service threads entering guest code; true if the core w
 void release_core();
 void set_service_core(uint32_t core);
 void report_sched();  // log per-thread core usage
+uint64_t blocked_ns();  // time the calling thread spent in blocking scopes (including the wait for its core)
 }  // namespace threads
 struct BlockingScope {
     BlockingScope() { threads::block_begin(); }

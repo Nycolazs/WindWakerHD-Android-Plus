@@ -1,0 +1,5 @@
+# performance: busy waits of the game that should give the host CPU away (runtime/src/perf_sites.cpp)
+@027596DC # WorkerMgr join (f_02759564): spins until every worker's busy word (+0x98) is 0
+@02759634 # WorkerMgr join (f_02759564), first loop: spins until the job's three done counters (+0x30) reach its total (virtual +0x24)
+@027F99E0 # f_027F9994: unlocks and relocks its mutex until another thread sets the flag at +0x388; the site runs between the unlock and the relock (never while holding the mutex)
+0275EBC0 # Yaz0 decompression: native (perf_sites.cpp hook_0275EBC0)

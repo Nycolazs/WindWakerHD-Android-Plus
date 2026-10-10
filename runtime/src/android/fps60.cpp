@@ -21,6 +21,8 @@ void set_mode(int m);  // 0 off, 1 interpolation, 2 true 60
 void set_mode40(bool v);  // 40 fps on a 120 Hz display
 }  // namespace interp
 
+namespace gfx { void request_builtin_frame_generation(bool on); }  // vk/vk_device.cpp
+
 namespace fps60 {
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -35,12 +37,14 @@ constexpr int64_t kRenderRoom = 11000000, kGameRoom = 22000000;
 }  // namespace
 
 void set_mode(int m) {
-    m = std::clamp(m, 0, 4);
+    m = std::clamp(m, 0, 5);
     g_mode = m;
     g_reset = true;
     interp::set_mode40(m == 4);  // 40 fps: interpolation at 4 frames per 3 steps (interp.cpp)
+    // 60 fps (generated): the game at its own 30, in-between frames reprojected on the GPU (vk/reproj.cpp)
+    gfx::request_builtin_frame_generation(m == 5);
     if (m == 3) interp::set_mode(2);  // true 60 (experimental): Link and the camera at 60 logic steps
-    else interp::set_enabled(m != 0);
+    else interp::set_enabled(m != 0 && m != 5);
 }
 
 int mode() { return g_mode; }

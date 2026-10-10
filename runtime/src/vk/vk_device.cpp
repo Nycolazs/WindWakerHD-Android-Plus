@@ -22,6 +22,7 @@
 #include "gx2/gx2.h"
 #include "android/perf_hint.h"
 #include "lsfg.h"
+#include "reproj.h"
 #include "platform.h"
 #include "runtime.h"
 #include "vk.h"
@@ -1165,6 +1166,11 @@ void request_window_frame_rate(ANativeWindow* window, float hz, int8_t compatibi
 
 // g_window_mutex held; true if a swapchain is ready. `main`: the game window (frame generation
 // presents there); else the GamePad's own display
+// frame generation: the LSFG network (lsfg.cpp, the user's Lossless.dll) or the built-in reprojection
+// (reproj.cpp, "60 fps (generated)"); both present through present_frame_fg and its present thread
+static bool gen_on() { return fg::loaded() || rp::enabled(); }
+static int gen_multiplier() { return rp::enabled() ? 2 : fg::config().multiplier; }
+
 bool ensure_swapchain(Swapchain& sc, bool main = true) {
     if (!sc.window) return false;
     if (sc.sc && !sc.stale) return true;
@@ -1184,7 +1190,7 @@ bool ensure_swapchain(Swapchain& sc, bool main = true) {
     }
     // frame generation presents at a steady multiple of the game's 30 fps: ask for a display mode
     // that is a multiple of it (a 144 Hz panel can't space 60 or 120 fps evenly; 120 Hz can)
-    if (main && fg::loaded()) request_window_frame_rate(sc.window, 30.0f * fg::config().multiplier,
+    if (main && gen_on()) request_window_frame_rate(sc.window, 30.0f * gen_multiplier(),
                                                         ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
     // without it the game flips at most 60 times a second: let a 90/120 Hz panel drop to 60 Hz
     // (40 fps: 120 Hz, a frame every 3 refreshes; present_frame follows a switch)
@@ -1213,7 +1219,7 @@ bool ensure_swapchain(Swapchain& sc, bool main = true) {
     // With frame generation the present thread paces the frames and each one must be shown: FIFO.
     VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
     for (auto m : modes)
-        if (m == VK_PRESENT_MODE_MAILBOX_KHR && !(main && fg::loaded())) mode = m;
+        if (m == VK_PRESENT_MODE_MAILBOX_KHR && !(main && gen_on())) mode = m;
 
     VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     ci.surface = sc.surface;
@@ -1410,7 +1416,7 @@ bool present_frame() {
     {  // the frame rate setting changed between 40 fps (120 Hz panel) and the others (60 Hz)
         static bool asked40 = false;
         bool want40 = interp::mode40();
-        if (want40 != asked40 && !fg::loaded()) {
+        if (want40 != asked40 && !gen_on()) {
             request_window_frame_rate(g_sc.window, want40 ? 120.0f : 60.0f, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT);
             asked40 = want40;
         }
@@ -1618,7 +1624,7 @@ bool fg_present(const Image* img) {
         g_sc.stale = true;
     g_fg_next = (g_fg_next + 1) % 3;
     vkResetFences(R.device, 1, &ps.fence);
-    VkImageView view = fg::view_of(img);
+    VkImageView view = rp::enabled() ? rp::view_of(img) : fg::view_of(img);
     if (!view) view = g_comp.view;
     VkDescriptorSet& set = g_fg_sets[view];
     if (!set) {
@@ -1807,6 +1813,7 @@ bool create_composite(uint32_t w, uint32_t h) {
 // ---- frame generation settings changed in the app: applied at the next frame boundary
 struct FgRequest {
     bool on = false;
+    bool builtin = false;  // the built-in reprojection (reproj.cpp) instead of the LSFG network
     fg::Config cfg;
 };
 std::mutex g_fg_req_mutex;
@@ -1821,7 +1828,7 @@ void apply_frame_generation() {
         r = g_fg_req;
         g_fg_req_pending = false;
     }
-    if (fg::loaded()) {
+    if (gen_on()) {
         // the present thread finishes what it has; then nothing uses the network's images
         wait_idle();
         fg_wait_present(true);
@@ -1836,12 +1843,17 @@ void apply_frame_generation() {
             if (g_fg_dpool) vkResetDescriptorPool(R.device, g_fg_dpool, 0);
         }
         destroy_composite();
-        fg::unload();
+        if (rp::enabled()) {
+            rp::set_enabled(false);
+            rp::destroy();
+        }
+        if (fg::loaded()) fg::unload();
     }
-    if (r.on) fg::load(r.cfg);  // logs why if the DLL can't be used
+    if (r.on && r.builtin) rp::set_enabled(true);
+    else if (r.on) fg::load(r.cfg);  // logs why if the DLL can't be used
     // present mode (FIFO with frame generation) and the display rate hint differ: new swapchain
     std::lock_guard<std::mutex> wl(g_window_mutex);
-    if (g_sc.window && !fg::loaded())
+    if (g_sc.window && !gen_on())
         request_window_frame_rate(g_sc.window, 60.0f, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT);
     g_sc.stale = true;
 }
@@ -1874,7 +1886,8 @@ bool present_frame_fg() {
         vkResetDescriptorPool(R.device, g_fg_dpool, 0);
         destroy_composite();
         if (!create_composite(w, h)) return false;
-        fg::resize(w, h, g_comp.view);
+        if (rp::enabled()) rp::resize(w, h);
+        else fg::resize(w, h, g_comp.view);
     }
     // the game's frame interval decides if generated frames fit the display's refresh rate
     static const double hz = getenv("WWHD_DISPLAY_HZ") ? atof(getenv("WWHD_DISPLAY_HZ")) : 60.0;
@@ -1887,7 +1900,7 @@ bool present_frame_fg() {
     }
     last = now;
     // fast forward (mods/turbo.cpp): game frames only, the game's own frame rate is the point
-    bool generate = fg::config().multiplier / interval <= hz * 1.1 && !g_fast_forward.load(std::memory_order_relaxed);
+    bool generate = gen_multiplier() / interval <= hz * 1.1 && !g_fast_forward.load(std::memory_order_relaxed);
 
     if (R.tv.img.image) prepare(R.tv.img, Use::SAMPLED);
     if (R.drc.img.image) prepare(R.drc.img, Use::SAMPLED);
@@ -1920,7 +1933,13 @@ bool present_frame_fg() {
     if (drcVisible) draw_screen(cmd, R.drc, drcRect, {w, h});
     vkCmdEndRenderPass(cmd);
     FgJob job;
-    job.images = fg::record(cmd, generate);
+    if (rp::enabled()) {
+        float rect[4];
+        fit(tvRect, (float)R.tv.img.width / std::max(1u, R.tv.img.height), rect, {w, h}, g_tv_aspect.load(std::memory_order_relaxed));
+        job.images = rp::record(cmd, g_comp.img, g_comp.view, rect, generate && R.tv.img.image);
+    } else {
+        job.images = fg::record(cmd, generate);
+    }
     uint64_t submitId = submit();
     wait_record_submitted(submitId);  // the present thread also submits to R.queue
     job.arrival = Clock::now();
@@ -1973,12 +1992,24 @@ void set_drc_window(ANativeWindow* w) {
 
 void request_frame_generation(bool on, const char* dll, bool quality, float flowScale, int multiplier, bool uiDetection) {
     std::lock_guard<std::mutex> lk(g_fg_req_mutex);
+    if (!(on && dll && *dll) && (rp::enabled() || (g_fg_req_pending && g_fg_req.builtin))) return;  // the built-in one is on
+    g_fg_req.builtin = false;
     g_fg_req.on = on && dll && *dll;
     g_fg_req.cfg.dll = dll ? dll : "";
     g_fg_req.cfg.performance = !quality;
     g_fg_req.cfg.flowScale = flowScale;
     g_fg_req.cfg.multiplier = multiplier;
     g_fg_req.cfg.uiDetection = uiDetection;
+    g_fg_req_pending = true;
+}
+
+// 60 fps (generated): the built-in reprojection on or off (at the next frame boundary)
+void request_builtin_frame_generation(bool on) {
+    std::lock_guard<std::mutex> lk(g_fg_req_mutex);
+    if (!on && !g_fg_req.builtin) return;  // the LSFG setting is not this one's to turn off
+    g_fg_req = FgRequest{};
+    g_fg_req.on = on;
+    g_fg_req.builtin = true;
     g_fg_req_pending = true;
 }
 
@@ -2059,6 +2090,16 @@ void clear_depth_stencil(const uint32_t* regs, uint32_t db, float depth, uint32_
 void copy_surface(uint32_t src, uint32_t srcMip, uint32_t srcSlice, uint32_t dst, uint32_t dstMip, uint32_t dstSlice) {
     void copy_surface_impl(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
     copy_surface_impl(src, srcMip, srcSlice, dst, dstMip, dstSlice);
+}
+
+// The GamePad picture while nothing shows it (TV-only and hybrid layouts outside the game's menus):
+// the game still draws it every frame (~130 draws, ~1 ms of GPU on an Adreno 650). Its draws go to
+// 854x480 targets (the game reuses the TV scene's memory for them, so the size is what tells them
+// apart; no TV-shaped target has it); they are left out then. WWHD_DRAW_HIDDEN_DRC=1 draws them anyway.
+bool skip_hidden_drc_draw(uint32_t w, uint32_t h) {
+    static const bool drawAnyway = getenv("WWHD_DRAW_HIDDEN_DRC") && atoi(getenv("WWHD_DRAW_HIDDEN_DRC")) != 0;
+    if (drawAnyway || h != 480 || (w != 854 && w != 855)) return false;
+    return !__atomic_load_n(&g_drc_visible, __ATOMIC_RELAXED) && !__atomic_load_n(&g_sc_drc.window, __ATOMIC_RELAXED);
 }
 
 void copy_to_scan(uint32_t cb, uint32_t target) {
@@ -2469,7 +2510,7 @@ static void perf_frame() {
         g_perf[1] = (float)(sumMs / frames);
         g_perf[2] = (float)maxMs;
         g_perf[3] = (float)((p - presents0) / el);
-        g_perf[4] = fg::loaded() ? fg::gpu_ms() : 0.0f;
+        g_perf[4] = fg::loaded() ? fg::gpu_ms() : 0.0f;  // (the built-in generation: one small pass)
         if (logIt) LOG("[perf] game %.1f fps, frame %.1f ms, max %.1f, late %d", g_perf[0], g_perf[1], g_perf[2], late);
         late = 0;
         presents0 = p;
@@ -2487,8 +2528,16 @@ void perf_stats(float out[7]) {
     memcpy(out, g_perf, sizeof g_perf);
 }
 
+void hitch_report(double frameMs, double warmMs);  // vk_draw.cpp
 void swap() {
-    cache_warm_step();
+    {
+        static auto last = std::chrono::steady_clock::now();
+        const auto t0 = std::chrono::steady_clock::now();
+        cache_warm_step();
+        const auto t1 = std::chrono::steady_clock::now();
+        hitch_report(std::chrono::duration<double, std::milli>(t0 - last).count(), std::chrono::duration<double, std::milli>(t1 - t0).count());
+        last = t1;
+    }
     perf_frame();
     // the upstream ADPF session (platform.cpp) would compete with ours on the same threads
     // (android/perf_hint.cpp, game + render thread work); WWHD_UPSTREAM_PERF_HINT=1 uses it too
@@ -2517,7 +2566,7 @@ void swap() {
         pendingCapture.clear();
     }
     if (const char* dir = capture_begin_frame()) pendingCapture = dir;
-    if (!(fg::loaded() ? present_frame_fg() : present_frame())) submit();
+    if (!(gen_on() ? present_frame_fg() : present_frame())) submit();
     present_drc_window();
     signal_frame_end();
     g_frames_submitted++;

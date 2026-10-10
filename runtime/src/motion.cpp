@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <ctime>
 #include <mutex>
 
 namespace motion {
@@ -38,9 +39,15 @@ struct State {
     long biasCount = 0;
     // latest sample, in the fusion's axes
     float gyro[3] = {}, acc[3] = {}, prevAcc[3] = {};
-    std::chrono::steady_clock::time_point last{};
+    int64_t lastMs = 0;  // coarse monotonic clock (the game reads the pad thousands of times a second)
     bool valid = false;
 };
+// CLOCK_MONOTONIC_COARSE: a few ns per read (no counter read), enough for the 500 ms staleness check
+int64_t coarse_ms() {
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
 State g;
 std::mutex g_mu;
 
@@ -116,7 +123,7 @@ void sample(float dt, float gx, float gy, float gz, float ax, float ay, float az
         g.gyro[i] = gyro[i];
     }
     fuse(dt, gyro[0], gyro[1], gyro[2], acc[0], acc[1], acc[2]);
-    g.last = std::chrono::steady_clock::now();
+    g.lastMs = coarse_ms();
     g.valid = true;
 }
 
@@ -127,7 +134,7 @@ void reset() {
 
 bool vpad(Vpad& o) {
     std::lock_guard<std::mutex> lk(g_mu);
-    if (!g.valid || std::chrono::steady_clock::now() - g.last > std::chrono::milliseconds(500)) return false;
+    if (!g.valid || coarse_ms() - g.lastMs > 500) return false;
     o.acc[0] = -g.acc[0];
     o.acc[1] = -g.acc[1];
     o.acc[2] = g.acc[2];

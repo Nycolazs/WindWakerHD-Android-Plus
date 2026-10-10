@@ -363,9 +363,44 @@ void report_sched() {
     }
     LOG("[sched]%s", out.c_str());
 }
+// test aid: WWHD_BLOCK_PROFILE=1 logs where the "main" guest thread blocks (guest return address,
+// total ms per 10 s), to find what a frame waits for
+static thread_local uint64_t t_blocked_ns;
+static thread_local std::chrono::steady_clock::time_point t_blocked_since;
+static thread_local uint32_t t_block_lr;
+static const bool g_block_profile = getenv("WWHD_BLOCK_PROFILE") != nullptr;
+static std::mutex g_block_prof_mu;
+static std::unordered_map<uint32_t, uint64_t> g_block_prof;  // guest lr -> ns
+uint64_t blocked_ns() { return t_blocked_ns; }
 void block_begin() {
-    if (g_log_longwait) t_block_start = std::chrono::steady_clock::now();
-    if (t_self) core_release(t_self);
+    t_blocked_since = std::chrono::steady_clock::now();
+    if (g_log_longwait) t_block_start = t_blocked_since;
+    if (t_self) {
+        t_block_lr = t_self->cpu.lr;
+        core_release(t_self);
+    }
+}
+static void block_account() {
+    const uint64_t ns = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t_blocked_since).count();
+    t_blocked_ns += ns;
+    if (!g_block_profile || !t_self || mem::read_cstr(ld32(t_self->guest + osthread::kName)) != "") return;  // the main thread is unnamed
+    static thread_local auto last = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lk(g_block_prof_mu);
+    g_block_prof[t_block_lr] += ns;
+    if (std::chrono::steady_clock::now() - last > std::chrono::seconds(10)) {
+        last = std::chrono::steady_clock::now();
+        std::vector<std::pair<uint64_t, uint32_t>> v;
+        for (auto& [lr, t] : g_block_prof) v.push_back({t, lr});
+        std::sort(v.rbegin(), v.rend());
+        std::string out;
+        for (size_t i = 0; i < v.size() && i < 10; i++) {
+            char b[48];
+            snprintf(b, sizeof b, " %08X:%.0fms", v[i].second, v[i].first / 1e6);
+            out += b;
+        }
+        LOG("[block] main thread blocked (10 s, by guest lr):%s", out.c_str());
+        g_block_prof.clear();
+    }
 }
 void block_end() {
     if (g_log_longwait && t_self) {
@@ -375,6 +410,7 @@ void block_end() {
                 t_self->cpu.lr);
     }
     if (t_self) core_acquire(t_self);
+    block_account();
 }
 bool ensure_core() {
     if (!t_self || t_self->holds_core || !g_sched_on) return false;

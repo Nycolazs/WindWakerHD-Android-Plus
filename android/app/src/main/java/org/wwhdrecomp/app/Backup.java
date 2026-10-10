@@ -82,6 +82,7 @@ final class Backup {
         Map<String, Uri> saveCommon = new LinkedHashMap<>();
         Map<String, Uri> states = new LinkedHashMap<>();      // slotN.bin / slotN.png -> document
         String saveFrom;                                      // where the game save was found (for the dialog)
+        long saveTime = Long.MIN_VALUE;                       // its cking.sav's time: the newest one is taken
 
         boolean empty() { return saveUser.isEmpty() && states.isEmpty(); }
 
@@ -96,18 +97,20 @@ final class Backup {
     private static final class Entry {
         String id, name;
         boolean dir;
+        long modified;
     }
 
     private static List<Entry> children(ContentResolver cr, Uri tree, String docId) {
         List<Entry> v = new ArrayList<>();
         Uri q = DocumentsContract.buildChildDocumentsUriUsingTree(tree, docId);
         try (Cursor c = cr.query(q, new String[] {Document.COLUMN_DOCUMENT_ID, Document.COLUMN_DISPLAY_NAME,
-                Document.COLUMN_MIME_TYPE}, null, null, null)) {
+                Document.COLUMN_MIME_TYPE, Document.COLUMN_LAST_MODIFIED}, null, null, null)) {
             while (c != null && c.moveToNext()) {
                 Entry e = new Entry();
                 e.id = c.getString(0);
                 e.name = c.getString(1);
                 e.dir = Document.MIME_TYPE_DIR.equals(c.getString(2));
+                e.modified = c.isNull(3) ? 0 : c.getLong(3);
                 v.add(e);
             }
         }
@@ -115,9 +118,9 @@ final class Backup {
     }
 
     /**
-     * Looks through the picked folder (a few levels deep): the game save is the first folder that
-     * holds cking.sav (this app's save/user, or Cemu's .../user/80000001), with a "common" folder
-     * next to it if there is one; save states are slot1..5.bin and their .png pictures.
+     * Looks through the picked folder (a few levels deep): the game save is the folder that holds the
+     * newest cking.sav (this app's save/user, or Cemu's .../user/80000001; the automatic backups keep
+     * one folder per install, AutoBackup), with a "common" folder next to it if there is one; save states are slot1..5.bin and their .png pictures.
      */
     static Found scan(ContentResolver cr, Uri tree) {
         Found f = new Found();
@@ -127,10 +130,13 @@ final class Backup {
 
     private static void scan(ContentResolver cr, Uri tree, String docId, String path, int depth, Found f) {
         List<Entry> kids = children(cr, tree, docId);
-        boolean hasSave = false;
+        Entry sav = null;
         for (Entry e : kids)
-            if (!e.dir && e.name.equals("cking.sav")) hasSave = true;
-        if (hasSave && f.saveUser.isEmpty()) {
+            if (!e.dir && e.name.equals("cking.sav")) sav = e;
+        if (sav != null && sav.modified > f.saveTime) {
+            f.saveUser.clear();
+            f.saveCommon.clear();
+            f.saveTime = sav.modified;
             for (Entry e : kids)
                 if (!e.dir) f.saveUser.put(e.name, DocumentsContract.buildDocumentUriUsingTree(tree, e.id));
             f.saveFrom = path.isEmpty() ? "." : path;
@@ -142,11 +148,11 @@ final class Backup {
         for (Entry e : kids) {
             if (!e.dir) continue;
             String sub = path.isEmpty() ? e.name : path + "/" + e.name;
-            boolean before = f.saveUser.isEmpty();
+            String before = f.saveFrom;
             scan(cr, tree, e.id, sub, depth + 1, f);
             // the game save was in that folder: take a "common" folder next to it (this app:
             // save/user + save/common; Cemu: user/80000001 + user/common)
-            if (before && sub.equals(f.saveFrom))
+            if (!sub.equals(before) && sub.equals(f.saveFrom))
                 for (Entry c : kids)
                     if (c.dir && c.name.equals("common"))
                         for (Entry x : children(cr, tree, c.id))

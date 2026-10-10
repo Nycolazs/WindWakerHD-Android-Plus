@@ -1178,6 +1178,9 @@ static VkSamplerAddressMode address_mode(uint32_t c) {
 // anisotropic filtering on mipmapped, linearly filtered textures
 static std::atomic<bool> g_aniso{[] { const char* e = getenv("WWHD_ANISO"); return e && atoi(e) != 0; }()};
 bool aniso_enabled() { return g_aniso.load(std::memory_order_relaxed); }
+static std::atomic<bool> g_distant_shadows{true};
+bool distant_shadows() { return g_distant_shadows.load(std::memory_order_relaxed); }
+void set_distant_shadows(bool v) { g_distant_shadows = v; LOG("[gfx] distant shadows %s", v ? "on" : "off"); }
 void set_aniso(bool v) { g_aniso = v; LOG("[gfx] anisotropic filtering %s", v ? "on" : "off"); }
 
 // allowAniso: the bound texture is a real mipmapped asset (not a buffer the GPU rendered); the game also
@@ -1354,6 +1357,7 @@ static Surface* hires_surface(Surface& dst, const Surface* like) {
         s.isDepth = like->isDepth;
         s.fmt = like->fmt;
         s.addr = 0;  // private: never found by address lookups
+        s.sceneScale = true;
         if (!create_surface_image(&s, true)) return nullptr;
         dst = std::move(s);
     }
@@ -2119,11 +2123,29 @@ void cache_warm_step() {
 }
 
 enum Skip { SK_GS, SK_RASTER_KILL, SK_NO_FETCH, SK_NO_SHADER, SK_NO_TARGET, SK_PRIM, SK_PASS, SK_PIPELINE, SK_CULL, SK_SCISSOR, SK_COMPILING,
-            SK_DROPPED_DEPTH, SK_DROPPED_COLOR, SK_PIPE_COMPILING, SK_COUNT };
+            SK_DROPPED_DEPTH, SK_DROPPED_COLOR, SK_PIPE_COMPILING, SK_HIDDEN_DRC, SK_FAR_SHADOW, SK_COUNT };
 static uint64_t g_skip[SK_COUNT];
 static const char* kSkipNames[SK_COUNT] = {"geometry-shader", "raster-kill", "no-fetch-shader", "shader-failed", "no-target",
                                            "unsupported-prim", "no-pass", "pipeline-failed", "cull-all", "empty-scissor",
-                                           "compiling", "dropped-depth", "dropped-color", "pipeline-compiling"};
+                                           "compiling", "dropped-depth", "dropped-color", "pipeline-compiling", "hidden-gamepad", "far-shadow"};
+// test aid: WWHD_HITCH_MS=n logs render-thread frames that took n ms or more between swaps, with
+// what the render thread spent on shader translation, waits for compiles and the cache warm-up
+void hitch_report(double frameMs, double warmMs) {
+    static const double thr = getenv("WWHD_HITCH_MS") ? atof(getenv("WWHD_HITCH_MS")) : 0;
+    static double lastDec = 0, lastWait = 0;
+    static size_t lastShaders = 0, lastPipes = 0;
+    const double wait = g_waited_ms[0] + g_waited_ms[1] + g_waited_ms[2];
+    const double dec = g_t_decompile - lastDec, waited = wait - lastWait;
+    const size_t shaders = g_shaders.size() - lastShaders, pipes = g_pipelines.size() - lastPipes;
+    lastDec = g_t_decompile;
+    lastWait = wait;
+    lastShaders = g_shaders.size();
+    lastPipes = g_pipelines.size();
+    if (thr > 0 && frameMs >= thr)
+        LOG("[hitch] frame %llu: %.1f ms between swaps; shader translation %.1f ms (%zu new shaders), compile waits %.1f ms, "
+            "%zu new pipelines, cache warm-up %.1f ms", (unsigned long long)R.frame, frameMs, dec, shaders, waited, pipes, warmMs);
+}
+
 void report_skips() {
     char buf[512];
     int n = 0;
@@ -2394,7 +2416,7 @@ static void record_draw(const uint32_t* regs, const Prepared& P, uint32_t prim, 
         }
     }
     if (g_hires_redraw) { g_hires_frame = R.frame; return; }  // the private copy is ready for the occlusion pass
-    if (ao_hires_enabled() && colors[0] && (regs[mmSQ_PGM_START_PS] << 8) == kDepthDownsamplePS) {
+    if (ao_hires_enabled() && ao_mode() != 3 && colors[0] && (regs[mmSQ_PGM_START_PS] << 8) == kDepthDownsamplePS) {
         g_hires_redraw = true;
         draw(regs, prim, count, indexType, indexAddr, baseVertex, instances);
         g_hires_redraw = false;
@@ -2484,6 +2506,16 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     for (int i = 0; i < 8; i++)
         if (mask & (1 << i)) colors[i] = color_target(regs, i, &colorSlices[i]);
     Surface* depth = LatteMRT::GetActiveDepthBufferMask(lcr) ? depth_target(regs, &depthSlice) : nullptr;
+    if (colors[0] && skip_hidden_drc_draw(colors[0]->width, colors[0]->height)) { g_skip[SK_HIDDEN_DRC]++; return; }
+    // "Distant shadows" off (Graphics setting, for weaker GPUs): the far shadow cascade (slice 2 of
+    // the game's depth-array shadow map) is not drawn, so it stays clear and casts nothing. It holds
+    // every caster again (~550 draws in Forest Haven, ~1.4 ms on an Adreno 650); the near and middle
+    // cascades keep the shadows around Link. WWHD_SHADOW_SKIP=mask leaves out other slices (tests).
+    if (depth && depth->slices > 1 && !colors[0] && !colors[1]) {
+        static const int skipTest = getenv("WWHD_SHADOW_SKIP") ? atoi(getenv("WWHD_SHADOW_SKIP")) : 0;
+        const int skip = skipTest | (!distant_shadows() && depth->slices == 3 ? 4 : 0);  // the game's 3 cascades
+        if (skip && depthSlice < 31 && ((skip >> depthSlice) & 1)) { g_skip[SK_FAR_SHADOW]++; return; }
+    }
     if (g_hires_redraw) {
         if (!colors[0]) return;
         g_hires_src = colors[0]->addr;
@@ -2579,6 +2611,36 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     resolve_textures(regs, vs, true, colors, depth, vtex);
     resolve_textures(regs, ps, false, colors, depth, ptex);
 
+    // A draw that binds a subset of the open render pass's attachments (the game switches between
+    // colour only, colour + its R8 second target, with and without depth on its main buffer) stays in
+    // that pass (ZeldaWWHDRecomp's Android work): its pipeline variant writes nothing to the attachments
+    // it doesn't bind and tests no depth when it binds none. Each avoided split saves a full store and
+    // reload of the main buffer on tiled GPUs. The textures are resolved already: one that is an
+    // attachment of the pass changed its layout and so ended the pass. WWHD_PASS_SUBSET=0: off.
+    uint32_t absentColors = 0;
+    bool depthAbsent = false;
+    {
+        static const bool subsetOn = [] { const char* e = getenv("WWHD_PASS_SUBSET"); return !e || atoi(e) != 0; }();
+        if (subsetOn && R.pass && !g_hires_redraw && R.passWidth == w && R.passHeight == h && colors[0] &&
+            R.passColor[0] == colors[0] && R.passColorSlice[0] == colorSlices[0]) {
+            bool ok = true;
+            for (int i = 0; i < 8 && ok; i++) {
+                if (colors[i]) ok = R.passColor[i] == colors[i] && R.passColorSlice[i] == colorSlices[i];
+                else if (R.passColor[i]) absentColors |= 1u << i;
+            }
+            if (depth) ok = ok && R.passDepth == depth && R.passDepthSlice == depthSlice;
+            else depthAbsent = R.passDepth != nullptr;
+            if (ok && (absentColors || depthAbsent)) {
+                for (int i = 0; i < 8; i++)
+                    if ((absentColors >> i) & 1) { colors[i] = R.passColor[i]; colorSlices[i] = R.passColorSlice[i]; }
+                if (depthAbsent) { depth = R.passDepth; depthSlice = R.passDepthSlice; }
+            } else {
+                absentColors = 0;
+                depthAbsent = false;
+            }
+        }
+    }
+
     PipelineState st;
     for (int i = 0; i < 8; i++)
         if (colors[i]) {
@@ -2592,10 +2654,12 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     for (int i = 0; i < 8; i++) st.blend[i] = regs[REGADDR::CB_BLEND0_CONTROL + i];
     st.colorControl = regs[REGADDR::CB_COLOR_CONTROL];
     st.targetMask = regs[REGADDR::CB_TARGET_MASK];
+    for (int i = 0; i < 8; i++)
+        if ((absentColors >> i) & 1) st.targetMask &= ~(0xFu << (4 * i));
     st.topology = (uint32_t)ptype;
     st.cull = (cf ? 1 : 0) | (cb ? 2 : 0);
     st.frontCCW = pm.get_FRONT_FACE() == LATTE_PA_SU_SC_MODE_CNTL::E_FRONTFACE::CCW;
-    st.depthControl = depth ? regs[REGADDR::DB_DEPTH_CONTROL] : 0;
+    st.depthControl = depth && !depthAbsent ? regs[REGADDR::DB_DEPTH_CONTROL] : 0;
     LATTE_PA_CL_CLIP_CNTL clipCntl;
     uint32_t clipRaw = regs[REGADDR::PA_CL_CLIP_CNTL];
     memcpy(&clipCntl, &clipRaw, 4);

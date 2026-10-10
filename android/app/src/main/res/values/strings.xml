@@ -199,6 +199,12 @@
     <string name="opt_export_hint">Copy your game save and save states to a folder</string>
     <string name="opt_import">Import saves</string>
     <string name="opt_import_hint">Restore them from a folder; an imported game save restarts the game</string>
+    <string name="opt_auto_backup">Automatic save backup</string>
+    <string name="opt_auto_backup_hint">Keeps a copy of your game save in Downloads/WindWakerHD Saves, which survives uninstalling the app</string>
+    <string name="restore_title">Restore your game save?</string>
+    <string name="restore_message">There is no game save yet. If you played before (an earlier version of the app, or a backup), pick the folder that holds it: the \"%1$s\" folder in Downloads has the automatic backups, or pick a folder you exported to. You can also do this later in Options > Saves > Import saves.</string>
+    <string name="restore_new_game">New game</string>
+    <string name="restore_pick">Choose folder…</string>
     <string name="opt_graphics">Graphics</string>
     <string name="opt_mods">Mods</string>
     <string name="opt_controls">Controls</string>
@@ -210,7 +216,7 @@
     <string name="opt_pad_hint">Controller: hold Select or press Home to open and close · L / R switch tabs · D-pad moves and changes values · right button selects · bottom button goes back</string>
     <string name="lang_restart">The new language takes effect when the game restarts. Progress since your last save is lost.</string>
     <string name="opt_fps">Frame rate</string>
-    <string name="opt_fps_hint">60 fps keeps the game at full speed from 30 to 60 fps by dropping late generated frames. Adaptive switches to a steady 30 when the device can\'t hold 60, then retries automatically.</string>
+    <string name="opt_fps_hint">60 fps (generated): the game runs at its own 30 and every other frame is made on the GPU from the last one (smooth on most phones; the HUD and the screen edges may show small artifacts). 60 fps draws every frame and needs a fast phone. Adaptive switches to a steady 30 when the device can\'t hold 60, then retries automatically.</string>
     <string-array name="fps_modes">
         <item>30 fps</item>
         <item>60 fps</item>
@@ -218,6 +224,7 @@
         <item>True 60 (experimental)</item>
     </string-array>
     <string name="fps_40">40 fps (120 Hz screen)</string>
+    <string name="fps_generated">60 fps (generated)</string>
     <string name="opt_layout_edit">Edit touch layout</string>
     <string name="opt_layout_edit_hint">Move and resize every control on a grid (also the ✎ button next to ≡)</string>
     <string name="layout_edit_hint">Drag to move · corner handle or pinch to resize · 🗑 removes the selected control · + puts removed ones back · Back cancels</string>
@@ -281,6 +288,8 @@
     <string name="opt_bloom_hint">Glow around bright areas. 100% matches the original game</string>
     <string name="opt_ao_hires">Full-size occlusion depth</string>
     <string name="opt_aniso">16× anisotropic filtering</string>
+    <string name="opt_distant_shadows">Distant shadows</string>
+    <string name="opt_distant_shadows_hint">The far shadows. Off: less GPU work in forests and open areas, for weaker phones</string>
     <string name="opt_perf">Performance overlay</string>
     <string name="opt_perf_hint">FPS, load and temperatures</string>
     <string name="opt_fg_choose_dll">Select Lossless.dll</string>

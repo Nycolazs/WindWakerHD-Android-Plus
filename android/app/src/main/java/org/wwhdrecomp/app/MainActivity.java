@@ -342,6 +342,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             return;
         }
         File base = baseDir();
+        if (!new File(base, "save/user/cking.sav").exists()) AutoBackup.startedWithoutSave(prefs);
+        autoBackup();  // what the last run saved (it may have ended without a pause)
         // testing: WWHD_CLEAR_SHADERS=1 (an intent extra) starts as with "Delete shader cache"
         if (Os.getenv("WWHD_CLEAR_SHADERS") != null) Backup.deleteTree(new File(getNoBackupFilesDir(), "shadercache"));
         if (!IconForge.ready(this)) {  // the controls' icons from the game's own artwork, once
@@ -368,7 +370,25 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (failedDriver != null)
             new GameDialog(this).title(R.string.opt_gpu_driver).message(getString(R.string.gpu_driver_failed, failedDriver))
                     .button(R.string.opt_ok, null).show();
-        else CrashLogs.offerNew(this, prefs);  // the last run crashed
+        else if (!offerRestore()) CrashLogs.offerNew(this, prefs);  // the last run crashed
+    }
+
+    // ------------------------------------------------------------------ save backups
+    /** Copies the game save to Downloads/WindWakerHD Saves (AutoBackup), unless turned off. */
+    void autoBackup() {
+        if (prefs.getBoolean("auto_backup", true)) AutoBackup.runAsync(this, baseDir(), prefs);
+    }
+
+    // No game save yet (a new install, or the app was uninstalled to update it): offer the backups,
+    // once per install. Returns whether the offer was shown.
+    private boolean offerRestore() {
+        if (prefs.getBoolean("restore_offered", false) || debuggable() && Os.getenv("WWHD_TEST_WARP") != null) return false;
+        prefs.edit().putBoolean("restore_offered", true).apply();
+        if (new File(baseDir(), "save/user/cking.sav").exists()) return false;
+        new GameDialog(this).title(R.string.restore_title).message(getString(R.string.restore_message, AutoBackup.FOLDER))
+                .button(R.string.restore_new_game, null)
+                .button(R.string.restore_pick, () -> pickFolder(PICK_IMPORT)).show();
+        return true;
     }
 
     // ------------------------------------------------------------------ GPU driver (Adreno)
@@ -379,6 +399,18 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     private String applyGpuDriver() {
         if (!GpuDrivers.supported()) return null;
+        // test aid (wwhd.env): WWHD_TEST_DRIVER_ZIP=<a driver .zip in this app's data folder> installs and
+        // selects it for this start; "system" goes back to the system driver
+        String testZip = debuggable() ? Os.getenv("WWHD_TEST_DRIVER_ZIP") : null;
+        if (testZip != null && !testZip.isEmpty()) {
+            if (testZip.equals("system")) prefs.edit().putString("gpu_driver", "").commit();
+            else try {
+                prefs.edit().putString("gpu_driver", GpuDrivers.install(this, android.net.Uri.fromFile(new File(testZip)))).commit();
+            } catch (IOException e) {
+                Log.w(TAG, "test driver " + testZip, e);
+            }
+            Log.i(TAG, "test driver: " + prefs.getString("gpu_driver", ""));
+        }
         GpuDrivers.Driver d = GpuDrivers.find(this, prefs.getString("gpu_driver", ""));
         if (d == null) return null;
         File probe = new File(d.dir, ".probe");
@@ -576,6 +608,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private void firstStartDefaults() {
         if (prefs.getBoolean("defaults_set", false)) return;
         SharedPreferences.Editor e = prefs.edit().putBoolean("defaults_set", true);
+        // 60 fps (generated): the game at its own 30, every other frame made on the GPU (gfx::rp)
+        if (!prefs.contains("fps_mode")) e.putInt("fps_mode", 5);
         if (!prefs.contains("layout") && !controllerAttached()) {
             e.putInt("layout", LAYOUT_HYBRID);
             if (!prefs.contains("pro_controller")) e.putBoolean("pro_controller", false);
@@ -612,6 +646,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         Native.setOption("bloom_strength", prefs.getInt("bloom_strength", 100));
         Native.setOption("ao_hires", prefs.getBoolean("ao_hires", Native.getOption("ao_hires") != 0) ? 1 : 0);
         Native.setOption("aniso", prefs.getBoolean("aniso", Native.getOption("aniso") != 0) ? 1 : 0);
+        Native.setOption("distant_shadows", prefs.getBoolean("distant_shadows", true) ? 1 : 0);
         Native.setOption("pro_controller", prefs.getBoolean("pro_controller", Native.getOption("pro_controller") != 0) ? 1 : 0);
         Native.setOption("tv_aspect", prefs.getInt("tv_aspect", 0));
         Native.setOption("render_aspect", prefs.getInt("render_aspect", 0));
@@ -1083,6 +1118,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (started) Native.setPaused(true);
         // the game's controller select screen may have switched the controls (hle/padscore.cpp)
         if (started) prefs.edit().putBoolean("pro_controller", Native.getOption("pro_controller") != 0).apply();
+        if (started) autoBackup();
         if (motion != null) motion.stop();
         if (rumble != null) rumble.stop();
     }
@@ -1660,7 +1696,10 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     }
 
     void pickFolder(int request) {
-        startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), request);
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        // imports start in the automatic backups' folder (the picker may ignore it)
+        if (request == PICK_IMPORT) i.putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, AutoBackup.pickerStart());
+        startActivityForResult(i, request);
     }
 
     /** runs `work` off the UI thread behind a progress dialog; `done` gets null or an error */

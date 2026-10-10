@@ -21,6 +21,10 @@
 #include "android/display_vsync.h"
 #include "android/fps60.h"
 #include "android/perf_hint.h"
+namespace gfx::rp {  // vk/reproj.cpp: 60 fps (generated)
+void layout_root(const uint32_t* regs, bool tv);
+void note_camera(const float eye[3], const float center[3], const float up[3], float fovy, float znear, float zfar);
+}  // namespace gfx::rp
 #endif
 #include "mem_writes.h"
 #include "../aspect.h"
@@ -217,6 +221,18 @@ static void emit_host(Op op, std::initializer_list<uint32> payload) {
     execute_one(op, payload.begin(), (uint32)payload.size());
 }
 
+// 60 fps (generated, vk/reproj.cpp): the 3D camera of the frame being drawn, in order with its drawing
+void framegen_camera(const float v[12]) {
+    uint32 w[12];
+    memcpy(w, v, sizeof w);
+    if (g_render_thread) {
+        enqueue(OP_FRAMEGEN_CAMERA, w, 12);
+        return;
+    }
+    std::lock_guard<std::recursive_mutex> lk(g_exec_mutex);
+    execute_one(OP_FRAMEGEN_CAMERA, w, 12);
+}
+
 void set_regs(uint32 first, const uint32* values, uint32 count) {
     if (!count) return;
     static thread_local std::vector<uint32> buf;
@@ -328,9 +344,22 @@ static void execute_one(Op op, const uint32* p, uint32 n) {
     case OP_PEEK_Z: gfx::peek_z(p, n); break;
     case OP_LAYOUT_ROOT: {
         float kx, ky;
-        aspect::layout_root_target(p[0], gfx::target_aspect_factors(g_regs[mmCB_COLOR0_TILE] & 0xFFFF, g_regs[mmCB_COLOR0_FRAG], kx, ky));
+        const bool tv = gfx::target_aspect_factors(g_regs[mmCB_COLOR0_TILE] & 0xFFFF, g_regs[mmCB_COLOR0_FRAG], kx, ky);
+        aspect::layout_root_target(p[0], tv);
+#ifdef __ANDROID__
+        gfx::rp::layout_root(g_regs, tv);
+#endif
         break;
     }
+#ifdef __ANDROID__
+    case OP_FRAMEGEN_CAMERA:
+        if (n >= 12) {
+            float v[12];
+            memcpy(v, p, sizeof v);
+            gfx::rp::note_camera(v, v + 3, v + 6, v[9], v[10], v[11]);
+        }
+        break;
+#endif
     case OP_SWAP:
         if (n) gfx::set_frame_aspect(gx2::bitsf(p[0]));  // aspect ratio from the next frame on (aspect.cpp)
         gfx::swap();
@@ -723,18 +752,51 @@ HLE(gx2, GX2SwapScanBuffers) {
         }
     }
 }
+// One frame of buffering in the 60 fps modes. The game starts a pass only once every frame it
+// swapped has been flipped (f_0274C874: wait for a vsync, then until flips == swaps) and each pass
+// starts on a vsync. Logic passes there take 13-17 ms and the passes in between 3-6 ms: a logic
+// pass that runs past its vsync cost a whole vsync of waiting, and the late logic step made the
+// interpolation drop in-between frames for a while (30 fps runs of ~200 ms, 46-53 fps in Outset on
+// an S20 FE). With buffering, a frame still waiting for its flip doesn't hold the game back (one
+// at most: the flip count it sees is one short at most), and after a pass that ran past its vsync
+// the next one starts at once instead of on the vsync after: the short pass after a long one makes
+// up the time. Costs one frame (16.7 ms) of latency while a frame is queued.
+// WWHD_PACE_BUFFER=0 turns it off.
+static bool pace_buffered() {
+    static const bool on = !getenv("WWHD_PACE_BUFFER") || atoi(getenv("WWHD_PACE_BUFFER")) != 0;
+    return on && interp::effective_swap_interval(g_swap_interval) == 1 && !interp::mode40();
+}
+static uint64_t g_pass_vsync = 0;  // vsync index when the game's last vsync wait returned (its pass began)
+static bool g_pass_borrowed = false;
+
 HLE(gx2, GX2GetSwapStatus) {
     std::lock_guard<std::mutex> lk(g_flip_mutex);
     update_flips();
+    uint64_t flips = g_flip_count;
+    if (pace_buffered() && g_swap_count == g_flip_count + 1) flips = g_swap_count;  // one queued frame counts as flipped
     if (arg(c, 0)) st32(arg(c, 0), (uint32)(g_swap_count + g_count_offset));
-    if (arg(c, 1)) st32(arg(c, 1), (uint32)(g_flip_count + g_count_offset));
+    if (arg(c, 1)) st32(arg(c, 1), (uint32)(flips + g_count_offset));
     if (arg(c, 2)) st64(arg(c, 2), timebase::to_guest(g_last_flip_time));
     if (arg(c, 3)) st64(arg(c, 3), timebase::guest_now());
 }
 HLE(gx2, GX2SetSwapInterval) { g_swap_interval = std::max<uint32>(arg(c, 0), 1); }
 HLE(gx2, GX2WaitForVsync) {
+    if (pace_buffered()) {
+        std::lock_guard<std::mutex> lk(g_flip_mutex);
+        update_flips();
+        const uint64_t now = vsync_index();
+        // the pass that began on vsync g_pass_vsync ran past the next one: start the next pass now
+        // (not twice in a row, and with at most one frame waiting for its flip)
+        if (!g_pass_borrowed && g_pass_vsync && now > g_pass_vsync && g_swap_count <= g_flip_count + 1) {
+            g_pass_borrowed = true;
+            g_pass_vsync = now;
+            return;
+        }
+    }
     threads::park_sleep_until(next_vsync_time(), true);  // precise: the frame starts on its vsync
     std::lock_guard<std::mutex> lk(g_flip_mutex);
+    g_pass_vsync = vsync_index();
+    g_pass_borrowed = false;
     update_flips();
     static uint64_t calls = 0;
     if (getenv("WWHD_LOG_VSYNC") && ++calls % 60 == 0)

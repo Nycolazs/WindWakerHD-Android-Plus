@@ -356,6 +356,13 @@ final class OptionsMenu extends Dialog {
 
     // save states (5 slots with their picture, time and place) and the import / export of saves
     private void saves() {
+        // the game save first: export, import and its automatic backup; then the save states
+        submenu(R.string.opt_export, R.string.opt_export_hint, "", a::chooseExport);
+        submenu(R.string.opt_import, R.string.opt_import_hint, "", () -> a.pickFolder(MainActivity.PICK_IMPORT));
+        toggle(R.string.opt_auto_backup, R.string.opt_auto_backup_hint, a.prefs.getBoolean("auto_backup", true), on -> {
+            a.prefs.edit().putBoolean("auto_backup", on).apply();
+            if (on) a.autoBackup();
+        });
         for (int slot = 1; slot <= 5; slot++) {
             String[] info = Native.saveSlotInfo(slot);
             boolean used = info[0].equals("1"), compatible = info[1].equals("1");
@@ -397,8 +404,6 @@ final class OptionsMenu extends Dialog {
             r.setFocusable(false);
             r.setBackground(slot(0x1F000000, 0));
         }
-        submenu(R.string.opt_export, R.string.opt_export_hint, "", a::chooseExport);
-        submenu(R.string.opt_import, R.string.opt_import_hint, "", () -> a.pickFolder(MainActivity.PICK_IMPORT));
     }
 
     // a state is captured at the next frame boundary and written in the background (a few seconds
@@ -440,13 +445,17 @@ final class OptionsMenu extends Dialog {
     private void graphics() {
         String[] res = new String[MainActivity.RES_SCALES.length];
         for (int i = 0; i < res.length; i++) res[i] = a.resolutionLabel(MainActivity.RES_SCALES[i]);
-        String[] fpsModes = a.getResources().getStringArray(R.array.fps_modes);
-        if (a.has120Hz()) {  // 40 fps (mode 4): only on 120 Hz panels
-            fpsModes = java.util.Arrays.copyOf(fpsModes, fpsModes.length + 1);
-            fpsModes[fpsModes.length - 1] = a.getString(R.string.fps_40);
+        // frame rate modes by id (fps_mode): 0-3 the array's, 4 40 fps (120 Hz panels only), 5 60 fps generated
+        java.util.List<String> fpsLabels = new java.util.ArrayList<>(java.util.Arrays.asList(a.getResources().getStringArray(R.array.fps_modes)));
+        java.util.List<Integer> fpsIds = new java.util.ArrayList<>(java.util.Arrays.asList(0, 1, 2, 3));
+        fpsLabels.add(1, a.getString(R.string.fps_generated));
+        fpsIds.add(1, 5);
+        if (a.has120Hz()) {
+            fpsLabels.add(a.getString(R.string.fps_40));
+            fpsIds.add(4);
         }
-        choice(R.string.opt_fps, R.string.opt_fps_hint, fpsModes,
-               a.prefs.getBoolean("fg_enabled", false) ? 0 : a.savedFpsMode(), a::setFpsMode);
+        int fpsCur = a.prefs.getBoolean("fg_enabled", false) ? 0 : Math.max(0, fpsIds.indexOf(a.savedFpsMode()));
+        choice(R.string.opt_fps, R.string.opt_fps_hint, fpsLabels.toArray(new String[0]), fpsCur, i -> a.setFpsMode(fpsIds.get(i)));
         choice(R.string.opt_drawdone, R.string.opt_drawdone_hint, a.getResources().getStringArray(R.array.drawdone_modes),
                a.prefs.getInt("drawdone_mode", 0), i -> {
                    a.prefs.edit().putInt("drawdone_mode", i).apply();
@@ -498,6 +507,8 @@ final class OptionsMenu extends Dialog {
         }
         toggle(R.string.opt_ao_hires, 0, Native.getOption("ao_hires") != 0, on -> a.setBool("ao_hires", on));
         toggle(R.string.opt_aniso, 0, Native.getOption("aniso") != 0, on -> a.setBool("aniso", on));
+        toggle(R.string.opt_distant_shadows, R.string.opt_distant_shadows_hint, Native.getOption("distant_shadows") != 0,
+                on -> a.setBool("distant_shadows", on));
         submenu(R.string.opt_perf, R.string.opt_perf_hint, a.getString(a.prefs.getBoolean("perf_hud", false) ? R.string.opt_on : R.string.opt_off),
                 () -> openPage(this::perfPage));
         if (GpuDrivers.supported())

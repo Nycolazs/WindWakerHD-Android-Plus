@@ -13,7 +13,9 @@
 // eye +0xDC, center +0xE8, up +0xF4, bank (s16) +0x100.
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <ctime>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -71,6 +73,14 @@ void f_027F5018_orig(Cpu* c);  // J3DModel UBO update
 }
 
 namespace interp {
+
+// CPU time of the game thread per pass kind (logic / hold), for the [interp] log line
+static uint64_t thread_cpu_ns() {
+    timespec ts;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+static uint64_t g_cpu_logic_ns, g_cpu_hold_ns, g_cpu_logic_max_ns, g_cpu_logic_n, g_cpu_hold_n, g_wall_logic_ns, g_blk_logic_ns;
 
 static std::atomic<bool> g_on{[] { const char* e = getenv("WWHD_INTERP"); return e && atoi(e) != 0 && !true60::enabled(); }()};
 // A late generated (hold) frame can be replaced by a full logic pass. During that pass every hook
@@ -341,9 +351,28 @@ extern "C" void hook_024FFC40(Cpu* c) {
     camera_draw(c);
     for (int i = 0; i < 3; i++) stf32(cam + kEye + 4 * i, eye[i]);
 }
+#ifdef __ANDROID__
+namespace gx2 { void framegen_camera(const float v[12]); }  // gx2_core.cpp
+namespace gfx::rp { bool enabled(); }         // vk/reproj.cpp
+#endif
 static void camera_draw(Cpu* c) {
     using namespace interp;
     uint32_t cam = c->r[3];
+#ifdef __ANDROID__
+    // 60 fps (generated): the camera this frame is drawn with (eye, center, up, fovy, near, far)
+    if (gfx::rp::enabled()) {
+        float v[12];
+        for (int i = 0; i < 3; i++) {
+            v[i] = (float)ldf32(cam + 0xDC + 4 * i);
+            v[3 + i] = (float)ldf32(cam + 0xE8 + 4 * i);
+            v[6 + i] = (float)ldf32(cam + 0xF4 + 4 * i);
+        }
+        v[9] = (float)ldf32(cam + 0xD4);
+        v[10] = (float)ldf32(cam + 0xCC);
+        v[11] = (float)ldf32(cam + 0xD0);
+        gx2::framegen_camera(v);
+    }
+#endif
     Prev* p = prev_for(cam);
     if (g_logic_pass && !true60::runs_60(cam)) {  // halfway between the step drawn last (N) and the new one (N+1)
         CamState cur = read_cam(cam);
@@ -695,9 +724,14 @@ extern "C" void hook_0203593C(Cpu* c) {
         static uint64_t n = 0, t0 = timebase::now();
         if (++n % 300 == 0) {
             uint64_t t = timebase::now();
-            LOG("[interp] %.1f logic steps/s; %.1f generated frames dropped/step; models per step: %.1f blended, %.1f new, %.1f cut",
+            LOG("[interp] %.1f logic steps/s; %.1f generated frames dropped/step; models per step: %.1f blended, %.1f new, %.1f cut; "
+                "game thread CPU per pass: logic %.1f ms (max %.1f; wall %.1f, blocked %.1f), hold %.1f ms",
                 300.0 * timebase::kTicksPerSec / (double)(t - t0), g_dropped_holds / 300.0,
-                g_mstats.blended / 300.0, g_mstats.fresh / 300.0, g_mstats.cut / 300.0);
+                g_mstats.blended / 300.0, g_mstats.fresh / 300.0, g_mstats.cut / 300.0,
+                g_cpu_logic_n ? g_cpu_logic_ns / 1e6 / g_cpu_logic_n : 0.0, g_cpu_logic_max_ns / 1e6,
+                g_cpu_logic_n ? g_wall_logic_ns / 1e6 / g_cpu_logic_n : 0.0, g_cpu_logic_n ? g_blk_logic_ns / 1e6 / g_cpu_logic_n : 0.0,
+                g_cpu_hold_n ? g_cpu_hold_ns / 1e6 / g_cpu_hold_n : 0.0);
+            g_cpu_logic_ns = g_cpu_hold_ns = g_cpu_logic_max_ns = g_cpu_logic_n = g_cpu_hold_n = g_wall_logic_ns = g_blk_logic_ns = 0;
             t0 = t;
             g_dropped_holds = 0;
             g_mstats.blended = g_mstats.fresh = g_mstats.cut = 0;
@@ -749,7 +783,10 @@ extern "C" void hook_0203593C(Cpu* c) {
             std::lock_guard<std::mutex> lk(g_ubo_mu);
             g_ubo_done.clear();  // (an update of the last pass the job never got to)
         }
+        const uint64_t cpu0 = thread_cpu_ns();
         f_0203593C_orig(c);
+        g_cpu_hold_ns += thread_cpu_ns() - cpu0;
+        g_cpu_hold_n++;
         g_hold_frame = false;
         g_hold = false;
         g_hold_next = false;
@@ -765,7 +802,17 @@ extern "C" void hook_0203593C(Cpu* c) {
         g_blend_w = kW40[phase40 & 3];
         g_model_pass++;
     }
+    const uint64_t cpu0 = thread_cpu_ns(), blk0 = threads::blocked_ns();
+    const auto wall0 = std::chrono::steady_clock::now();
     f_0203593C_orig(c);  // logic pass (the loop body hook marks it)
+    {
+        g_wall_logic_ns += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - wall0).count();
+        g_blk_logic_ns += threads::blocked_ns() - blk0;
+        const uint64_t d = thread_cpu_ns() - cpu0;
+        g_cpu_logic_ns += d;
+        g_cpu_logic_max_ns = std::max(g_cpu_logic_max_ns, d);
+        g_cpu_logic_n++;
+    }
     g_blend_w = 0.5f;
     g_hold_next = true;
     if (m40) {

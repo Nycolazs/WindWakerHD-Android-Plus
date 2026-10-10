@@ -42,6 +42,8 @@ int bloom_strength();
 void set_bloom_strength(int pct);
 bool aniso_enabled();
 void set_aniso(bool v);
+bool distant_shadows();
+void set_distant_shadows(bool v);
 bool ao_hires_enabled();
 void set_ao_hires(bool v);
 void request_capture();
@@ -489,13 +491,14 @@ JNI_FN(void, setOption)(JNIEnv* env, jclass, jstring name, jint value) {
     else if (n == "bloom_strength") gfx::set_bloom_strength(value);
     else if (n == "ao_hires") gfx::set_ao_hires(value != 0);
     else if (n == "aniso") gfx::set_aniso(value != 0);
+    else if (n == "distant_shadows") gfx::set_distant_shadows(value != 0);
     else if (n == "pro_controller") input::set_pro_controller(value != 0);
     else if (n == "capture") gfx::request_capture();
     else if (n == "res_scale") gfx::set_resolution_scale(value / 100.0f);
     else if (n == "tv_aspect") gfx::set_tv_aspect(value);
     // aspect ratio the game renders at (aspect.cpp): 0 = 16:9 (original), 1 = the screen's shape
     else if (n == "render_aspect") aspect::set_mode(value == 1 ? aspect::kWindow : aspect::kOriginal);
-    else if (n == "fps_mode") fps60::set_mode(value);
+    else if (n == "fps_mode") fps60::set_mode(getenv("WWHD_FPS_MODE") ? atoi(getenv("WWHD_FPS_MODE")) : value);  // env: tests
     else if (n == "drawdone_mode") gx2::set_drawdone_mode(value);
     else if (n == "core_mode") platform::set_core_mode(value);
     // the HUD editor: "hud_<part>_s" size percent (negative: hidden), "hud_refresh"
@@ -535,6 +538,7 @@ JNI_FN(jint, getOption)(JNIEnv* env, jclass, jstring name) {
     if (n == "bloom_strength") return gfx::bloom_strength();
     if (n == "ao_hires") return gfx::ao_hires_enabled();
     if (n == "aniso") return gfx::aniso_enabled();
+    if (n == "distant_shadows") return gfx::distant_shadows();
     if (n == "pro_controller") return input::pro_controller();
     if (n == "tv_aspect") return gfx::tv_aspect();
     if (n == "render_aspect") return aspect::mode() == aspect::kWindow ? 1 : 0;
