@@ -18,10 +18,13 @@
 // main thread always is. Worker threads normally idle at the same wait. If not, the load is retried
 // on the following frames and finally refused with a message; nothing is changed then.
 //
-// Slot file: header (uncompressed) + LZ4 blocks of the payload: tagged sections from each module
-// (threads + HLE sync objects + alarms + guest clock, heaps, open files, AX voices, GX2 registers,
-// runtime allocations) and guest memory (MEM2, runtime objects, fixed slots, foreground bucket,
-// MEM1; all-zero 64 KiB chunks are left out).
+// Slot file (version 2): header, the sections from each module (threads + HLE sync objects + alarms
+// + guest clock, heaps, open files, AX voices, GX2 registers, runtime allocations) zstd-compressed,
+// then guest memory (MEM2, runtime objects, fixed slots, foreground bucket, MEM1) as 64 KiB chunks
+// compressed one by one (all-zero chunks are left out). Chunks are compressed straight from guest
+// memory while the game is frozen and stay compressed in memory until they're restored, so neither
+// saving nor loading holds the raw ~580 MB (that got the game killed for low memory on 6 GB phones).
+// Version 1 (read only): zlib blocks (LZ4 on macOS) of one payload holding sections and raw memory.
 #include "savestate.h"
 
 #ifdef __APPLE__
@@ -33,6 +36,7 @@
 #include <link.h>
 #include <zlib.h>  // blocks are deflated instead of LZ4 (states don't move between platforms)
 #endif
+#include <zstd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -82,7 +86,8 @@ namespace ss {
 namespace {
 
 constexpr char kMagic[8] = {'W', 'W', 'H', 'D', 'S', 'T', 'A', 'T'};
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;  // written; 1 is still read
+constexpr int kZstdLevel = 1;
 constexpr uint32_t kChunk = 0x10000;
 constexpr uint32_t kBlock = 8 << 20;  // compression block (raw bytes)
 
@@ -125,12 +130,27 @@ std::vector<Region> regions() {
             {mem::kMem1, mem::kMem1Size}};
 }
 
-// A snapshot in memory: header + payload (sections); memory chunks point into the payload.
+// a memory chunk of a snapshot: 64 KiB as they are (comp == 0) or zstd-compressed (comp bytes)
+struct ChunkRef {
+    const uint8_t* p = nullptr;
+    uint32_t comp = 0;
+};
+bool chunk_data(const ChunkRef& c, uint8_t* dst) {
+    if (!c.comp) {
+        memcpy(dst, c.p, kChunk);
+        return true;
+    }
+    return ZSTD_decompress(dst, kChunk, c.p, c.comp) == kChunk;
+}
+
+// A snapshot in memory: header + payload (sections; version 1 also the raw memory) + the memory
+// chunks (version 2: compressed, in blob).
 struct Snapshot {
     Header h{};
     std::vector<uint8_t> payload;
+    std::vector<uint8_t> blob;
     std::map<uint32_t, std::pair<size_t, size_t>> sections;  // tag -> (offset, size)
-    std::unordered_map<uint32_t, const uint8_t*> chunks;      // chunk address -> data (absent = zero)
+    std::unordered_map<uint32_t, ChunkRef> chunks;            // chunk address -> data (absent = zero)
     std::vector<Region> regs;
     int slot = 0;
 
@@ -139,7 +159,7 @@ struct Snapshot {
         if (it == sections.end()) return Reader(nullptr, 0);
         return Reader(payload.data() + it->second.first, it->second.second);
     }
-    bool parse() {
+    bool parse_sections() {
         Reader r(payload.data(), payload.size());
         while (r.ok && !r.at_end()) {
             uint32_t tag = r.u32();
@@ -148,7 +168,11 @@ struct Snapshot {
             if (!r.bytes(nullptr, n)) return false;
             sections[tag] = {off, (size_t)n};
         }
-        if (!r.ok || !sections.count(kSecMemory)) return false;
+        return r.ok;
+    }
+    // version 1: the memory is a section of the payload
+    bool parse() {
+        if (!parse_sections() || !sections.count(kSecMemory)) return false;
         Reader m = section(kSecMemory);
         uint32_t nr = m.u32();
         for (uint32_t i = 0; i < nr && m.ok; i++) {
@@ -157,7 +181,7 @@ struct Snapshot {
             uint32_t present = m.u32();
             for (uint32_t k = 0; k < present && m.ok; k++) {
                 uint32_t idx = m.u32();
-                chunks[g.base + idx * kChunk] = m.p;
+                chunks[g.base + idx * kChunk] = ChunkRef{m.p, 0};
                 if (!m.bytes(nullptr, kChunk)) return false;
             }
         }
@@ -174,6 +198,7 @@ std::shared_ptr<Snapshot> g_load_ready;   // decompressed, waiting for the frame
 std::atomic<bool> g_loading{false};       // a slot file is being read
 int g_attempts = 0;
 const Snapshot* g_check = nullptr;        // snapshot whose memory snap_ld32 reads
+uint64_t g_check_serial = 0;              // bumped with each g_check (snap_ld32's unpacked chunk)
 
 void message(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 void message(const char* fmt, ...) {
@@ -257,15 +282,7 @@ int page_residency(void* p, size_t n, char* vec) {
 #endif
 }
 
-// one block of the slot file; 0 if it doesn't get smaller
-size_t compress_block(uint8_t* dst, size_t dstSize, const uint8_t* src, size_t n, void* scratch) {
-#ifdef __APPLE__
-    return compression_encode_buffer(dst, dstSize, src, n, (uint8_t*)scratch, COMPRESSION_LZ4);
-#else
-    uLongf out = dstSize;
-    return compress2(dst, &out, src, n, 1) == Z_OK ? out : 0;
-#endif
-}
+// one block of a version 1 slot file
 size_t decompress_block(uint8_t* dst, size_t n, const uint8_t* src, size_t srcSize, void* scratch) {
 #ifdef __APPLE__
     return compression_decode_buffer(dst, n, src, srcSize, (uint8_t*)scratch, COMPRESSION_LZ4);
@@ -274,11 +291,10 @@ size_t decompress_block(uint8_t* dst, size_t n, const uint8_t* src, size_t srcSi
     return uncompress(dst, &out, src, srcSize) == Z_OK ? out : 0;
 #endif
 }
-size_t scratch_size(bool encode) {
+size_t scratch_size() {
 #ifdef __APPLE__
-    return encode ? compression_encode_scratch_buffer_size(COMPRESSION_LZ4) : compression_decode_scratch_buffer_size(COMPRESSION_LZ4);
+    return compression_decode_scratch_buffer_size(COMPRESSION_LZ4);
 #else
-    (void)encode;
     return 1;
 #endif
 }
@@ -314,16 +330,28 @@ std::string stage_name() {
 }
 
 // ---------------------------------------------------------------- memory
-void capture_memory(Writer& w) {
-    auto rs = regions();
-    w.u32((uint32_t)rs.size());
+// guest memory, captured while the game is frozen: the chunks that aren't all zero, compressed on
+// every core straight from guest memory
+struct Captured {
+    struct Piece {
+        uint32_t thread, offset, comp;  // comp 0: stored as it is
+    };
+    std::vector<Region> regs;
+    std::vector<uint32_t> addrs;  // chunk addresses, in order
+    std::vector<Piece> pieces;    // by chunk
+    std::vector<std::vector<uint8_t>> out;  // by compressing thread
+    size_t bytes() const {
+        size_t n = 0;
+        for (auto& o : out) n += o.size();
+        return n;
+    }
+};
+
+std::shared_ptr<Captured> capture_memory() {
+    auto c = std::make_shared<Captured>();
+    c->regs = regions();
     std::vector<char> vec(kChunk / getpagesize() + 1);
-    for (auto& g : rs) {
-        w.u32(g.base);
-        w.u32(g.size);
-        size_t count_at = w.b.size();
-        w.u32(0);
-        uint32_t present = 0;
+    for (auto& g : c->regs) {
         for (uint32_t off = 0; off < g.size; off += kChunk) {
             uint8_t* p = mem::ptr(g.base + off);
             // untouched pages are zero: skip them without reading (reading would commit them)
@@ -335,26 +363,62 @@ void capture_memory(Writer& w) {
             const uint64_t* q = (const uint64_t*)p;
             bool zero = true;
             for (size_t i = 0; i < kChunk / 8 && zero; i++) zero = q[i] == 0;
-            if (zero) continue;
-            w.u32(off / kChunk);
-            w.bytes(p, kChunk);
-            present++;
+            if (!zero) c->addrs.push_back(g.base + off);
         }
-        memcpy(&w.b[count_at], &present, 4);
     }
+    const unsigned nt = std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
+    c->out.resize(nt);
+    c->pieces.resize(c->addrs.size());
+    std::atomic<size_t> next{0};
+    auto work = [&](unsigned t) {
+        ZSTD_CCtx* cx = ZSTD_createCCtx();
+        std::vector<uint8_t> tmp(ZSTD_compressBound(kChunk));
+        std::vector<uint8_t>& o = c->out[t];
+        o.reserve((c->addrs.size() / nt + 16) * (kChunk / 2));  // address space; grows if needed
+        for (size_t i; (i = next.fetch_add(1, std::memory_order_relaxed)) < c->addrs.size();) {
+            const uint8_t* src = mem::ptr(c->addrs[i]);
+            size_t n = cx ? ZSTD_compressCCtx(cx, tmp.data(), tmp.size(), src, kChunk, kZstdLevel) : 0;
+            Captured::Piece& pc = c->pieces[i];
+            pc.thread = t;
+            pc.offset = (uint32_t)o.size();
+            if (!cx || ZSTD_isError(n) || n >= kChunk) {
+                o.insert(o.end(), src, src + kChunk);
+                pc.comp = 0;
+            } else {
+                o.insert(o.end(), tmp.data(), tmp.data() + n);
+                pc.comp = (uint32_t)n;
+            }
+        }
+        ZSTD_freeCCtx(cx);
+    };
+    std::vector<std::thread> pool;
+    for (unsigned t = 1; t < nt; t++) pool.emplace_back(work, t);
+    work(0);
+    for (auto& th : pool) th.join();
+    return c;
 }
 
 void restore_memory(const Snapshot& s) {
+    // the saved chunks, unpacked on every core straight into guest memory (read_slot checked them)
+    std::vector<std::pair<uint32_t, ChunkRef>> list(s.chunks.begin(), s.chunks.end());
+    std::atomic<size_t> next{0};
+    std::atomic<int> bad{0};
+    auto work = [&] {
+        for (size_t i; (i = next.fetch_add(1, std::memory_order_relaxed)) < list.size();)
+            if (!chunk_data(list[i].second, mem::ptr(list[i].first))) bad++;
+    };
+    const unsigned nt = std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
+    std::vector<std::thread> pool;
+    for (unsigned t = 1; t < nt; t++) pool.emplace_back(work);
+    work();
+    for (auto& th : pool) th.join();
+    if (bad) LOG("[savestate] %d memory chunks could not be unpacked", bad.load());
     std::vector<char> vec(kChunk / getpagesize() + 1);
     for (auto& g : s.regs) {
         for (uint32_t off = 0; off < g.size; off += kChunk) {
             uint32_t a = g.base + off;
             uint8_t* p = mem::ptr(a);
-            auto it = s.chunks.find(a);
-            if (it != s.chunks.end()) {
-                memcpy(p, it->second, kChunk);
-                continue;
-            }
+            if (s.chunks.count(a)) continue;
             if (page_residency(p, kChunk, vec.data()) == 0) {
                 bool touched = false;
                 for (size_t i = 0; i < kChunk / (size_t)getpagesize(); i++) touched |= vec[i] != 0;
@@ -368,46 +432,27 @@ void restore_memory(const Snapshot& s) {
 }
 
 // ---------------------------------------------------------------- slot files
-bool write_slot(int slot, const Header& h0, const std::vector<uint8_t>& payload) {
+// version 2: header, u64 size + zstd sections, u32 count + regions, then per chunk u32 address,
+// u32 compressed size (0: 64 KiB as they are) and its bytes
+bool write_slot(int slot, const Header& h0, const std::vector<uint8_t>& sections, const Captured& c) {
     Header h = h0;
-    size_t nblocks = (payload.size() + kBlock - 1) / kBlock;
-    h.blocks = (uint32_t)nblocks;
-    h.raw_size = payload.size();
+    h.blocks = (uint32_t)c.addrs.size();
+    h.raw_size = sections.size();
+    std::vector<uint8_t> sc(ZSTD_compressBound(sections.size()));
+    size_t sn = ZSTD_compress(sc.data(), sc.size(), sections.data(), sections.size(), kZstdLevel);
+    if (ZSTD_isError(sn)) return false;
     std::string tmp = slot_path(slot, "tmp");
     FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) return false;
-    bool ok = fwrite(&h, sizeof h, 1, f) == 1;
-    // one batch of blocks per round (a block for each thread), written in order: the compressed
-    // state isn't held in memory as a whole (with the 580 MB payload that got the game killed for
-    // low memory on a 6 GB phone)
-    unsigned nt = std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
-    std::vector<std::vector<uint8_t>> out(nt), scratch(nt);
-    std::vector<size_t> len(nt);
-    for (unsigned t = 0; t < nt; t++) {
-        out[t].resize(8 + kBlock + kBlock / 8 + 1024);
-        scratch[t].resize(scratch_size(true));
-    }
-    for (size_t first = 0; first < nblocks && ok; first += nt) {
-        const unsigned batch = (unsigned)std::min<size_t>(nt, nblocks - first);
-        auto work = [&](unsigned t) {
-            const size_t i = first + t;
-            const size_t raw = std::min<size_t>(kBlock, payload.size() - i * kBlock);
-            std::vector<uint8_t>& o = out[t];
-            size_t n = compress_block(o.data() + 8, o.size() - 8, payload.data() + i * kBlock, raw, scratch[t].data());
-            uint32_t hdr[2] = {(uint32_t)raw, (uint32_t)n};
-            if (!n || n >= raw) {  // incompressible: stored
-                memcpy(o.data() + 8, payload.data() + i * kBlock, raw);
-                hdr[1] = 0;
-                n = raw;
-            }
-            memcpy(o.data(), hdr, 8);
-            len[t] = 8 + n;
-        };
-        std::vector<std::thread> pool;
-        for (unsigned t = 1; t < batch; t++) pool.emplace_back(work, t);
-        work(0);
-        for (auto& th : pool) th.join();
-        for (unsigned t = 0; t < batch && ok; t++) ok = fwrite(out[t].data(), 1, len[t], f) == len[t];
+    uint64_t sn64 = sn;
+    uint32_t nr = (uint32_t)c.regs.size();
+    bool ok = fwrite(&h, sizeof h, 1, f) == 1 && fwrite(&sn64, 8, 1, f) == 1 && fwrite(sc.data(), 1, sn, f) == sn &&
+              fwrite(&nr, 4, 1, f) == 1 && fwrite(c.regs.data(), sizeof(Region), nr, f) == nr;
+    for (size_t i = 0; i < c.addrs.size() && ok; i++) {
+        const Captured::Piece& pc = c.pieces[i];
+        uint32_t rec[2] = {c.addrs[i], pc.comp};
+        size_t n = pc.comp ? pc.comp : kChunk;
+        ok = fwrite(rec, 8, 1, f) == 1 && fwrite(c.out[pc.thread].data() + pc.offset, 1, n, f) == n;
     }
     ok = fclose(f) == 0 && ok;
     if (ok) ok = rename(tmp.c_str(), slot_path(slot).c_str()) == 0;
@@ -418,7 +463,7 @@ bool write_slot(int slot, const Header& h0, const std::vector<uint8_t>& payload)
 bool read_header(FILE* f, Header& h, std::string& why) {
     memset(&h, 0, sizeof h);
     if (fread(&h, kHeaderV1Size, 1, f) != 1 || memcmp(h.magic, kMagic, 8) != 0) { why = "not a save state"; return false; }
-    if (h.version != kVersion || h.header_size < kHeaderV1Size || h.header_size > 4096) { why = "saved by another version"; return false; }
+    if (h.version < 1 || h.version > kVersion || h.header_size < kHeaderV1Size || h.header_size > 4096) { why = "saved by another version"; return false; }
     // the fields added since (a newer header's unknown rest is skipped)
     size_t known = std::min<size_t>(h.header_size, sizeof h) - kHeaderV1Size;
     uint32_t headerSize = h.header_size;
@@ -429,18 +474,72 @@ bool read_header(FILE* f, Header& h, std::string& why) {
     return true;
 }
 
+// the rest of a version 2 file (after the header): sections unpacked, memory chunks kept compressed
+// (each one checked here, so restoring can't fail halfway)
+bool read_slot_v2(FILE* f, Snapshot& s, std::string& why) {
+    why = "file is truncated";
+    uint64_t sn = 0;
+    if (fread(&sn, 8, 1, f) != 1 || sn > (1u << 30) || s.h.raw_size > (1u << 30)) return false;
+    std::vector<uint8_t> sc(sn);
+    if (fread(sc.data(), 1, sn, f) != sn) return false;
+    s.payload.resize(s.h.raw_size);
+    if (ZSTD_decompress(s.payload.data(), s.payload.size(), sc.data(), sc.size()) != s.payload.size()) { why = "file is corrupt"; return false; }
+    uint32_t nr = 0;
+    if (fread(&nr, 4, 1, f) != 1 || nr > 64) return false;
+    s.regs.resize(nr);
+    if (fread(s.regs.data(), sizeof(Region), nr, f) != nr) return false;
+    long at = ftell(f);
+    if (at < 0 || fseek(f, 0, SEEK_END) != 0) return false;
+    long end = ftell(f);
+    if (end < at || fseek(f, at, SEEK_SET) != 0) return false;
+    s.blob.resize((size_t)(end - at));
+    if (fread(s.blob.data(), 1, s.blob.size(), f) != s.blob.size()) return false;
+    Reader r(s.blob.data(), s.blob.size());
+    std::vector<std::pair<uint32_t, ChunkRef>> list;
+    list.reserve(s.h.blocks);
+    for (uint32_t i = 0; i < s.h.blocks && r.ok; i++) {
+        uint32_t addr = r.u32(), comp = r.u32();
+        const uint8_t* p = r.p;
+        if (comp > kChunk || !r.bytes(nullptr, comp ? comp : kChunk)) return false;
+        list.push_back({addr, ChunkRef{p, comp}});
+    }
+    // every chunk must unpack (into a scratch buffer; the game keeps running meanwhile)
+    std::atomic<size_t> next{0};
+    std::atomic<bool> bad{false};
+    auto work = [&] {
+        std::vector<uint8_t> tmp(kChunk);
+        for (size_t i; (i = next.fetch_add(1, std::memory_order_relaxed)) < list.size() && !bad;)
+            if (!chunk_data(list[i].second, tmp.data())) bad = true;
+    };
+    const unsigned nt = std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
+    std::vector<std::thread> pool;
+    for (unsigned t = 1; t < nt; t++) pool.emplace_back(work);
+    work();
+    for (auto& th : pool) th.join();
+    if (bad || !r.ok || !s.parse_sections()) { why = "file is corrupt"; return false; }
+    s.chunks.reserve(list.size());
+    for (auto& [a, c] : list) s.chunks[a] = c;
+    why.clear();
+    return true;
+}
+
 std::shared_ptr<Snapshot> read_slot(int slot, std::string& why) {
     FILE* f = fopen(slot_path(slot).c_str(), "rb");
     if (!f) { why = "empty"; return nullptr; }
     auto s = std::make_shared<Snapshot>();
     s->slot = slot;
     if (!read_header(f, s->h, why)) { fclose(f); return nullptr; }
+    if (s->h.version >= 2) {
+        bool ok = read_slot_v2(f, *s, why);
+        fclose(f);
+        return ok ? s : nullptr;
+    }
     s->payload.resize(s->h.raw_size);
     // a batch of blocks per round (one for each thread): the compressed file isn't held as a whole
     unsigned nt = std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
     std::vector<std::vector<uint8_t>> blocks(nt), scratch(nt);
     std::vector<uint32_t> raws(nt), comps(nt);
-    for (unsigned t = 0; t < nt; t++) scratch[t].resize(scratch_size(false));
+    for (unsigned t = 0; t < nt; t++) scratch[t].resize(scratch_size());
     bool ok = true;
     std::atomic<bool> bad{false};
     for (uint32_t first = 0; first < s->h.blocks && ok && !bad; first += nt) {
@@ -561,13 +660,7 @@ bool do_save(int slot) {
         message("Slot %d: not saved (%s)", slot, why.c_str());
         return true;
     }
-    auto payload = std::make_shared<Writer>();
-    // room for every memory region at once: only the bytes written take memory, and the buffer never
-    // grows (growing past the 512 MB reserved before copied it, with both copies alive; a state is
-    // ~580 MB)
-    size_t bound = 64u << 20;
-    for (auto& g : regions()) bound += g.size + (g.size / kChunk) * 4 + 16;
-    payload->b.reserve(bound);
+    auto payload = std::make_shared<Writer>();  // the sections (memory: capture_memory)
     put_section(*payload, kSecThreads, threads_w);
     Writer w;
     mem_ss_save(w);
@@ -587,13 +680,7 @@ bool do_save(int slot) {
     w = Writer();
     save_dispatch(w);
     put_section(*payload, kSecDispatch, w);
-    // memory last, written straight into the payload
-    payload->u32(kSecMemory);
-    size_t len_at = payload->b.size();
-    payload->u64(0);
-    capture_memory(*payload);
-    uint64_t mlen = payload->b.size() - len_at - 8;
-    memcpy(&payload->b[len_at], &mlen, 8);
+    auto memory = capture_memory();
     Header h{};
     memcpy(h.magic, kMagic, 8);
     h.version = kVersion;
@@ -607,15 +694,16 @@ bool do_save(int slot) {
     h.controller = input::pro_controller() ? 2 : 1;
     threads::thaw();
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    LOG("[savestate] slot %d: captured %.1f MB in %.1f ms (stage %s)", slot, payload->b.size() / 1048576.0, ms, stage.c_str());
+    LOG("[savestate] slot %d: captured %.1f MB of memory as %.1f MB in %.1f ms (stage %s)", slot,
+        memory->addrs.size() * (double)kChunk / 1048576.0, memory->bytes() / 1048576.0, ms, stage.c_str());
     gfx::request_tv_dump(slot_path(slot, "png"), 0);
     // compress and write in the background; the game continues
-    std::thread([slot, h, payload, stage] {
+    std::thread([slot, h, payload, memory, stage] {
         auto t1 = std::chrono::steady_clock::now();
         bool ok;
         {
             std::lock_guard<std::mutex> io(g_io);
-            ok = write_slot(slot, h, payload->b);
+            ok = write_slot(slot, h, payload->b, *memory);
         }
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
         struct stat st{};
@@ -641,6 +729,7 @@ bool do_load(const std::shared_ptr<Snapshot>& s) {
     }
     gx2_ss_drain();
     g_check = s.get();
+    g_check_serial++;
     bool ok = check_allocs(s->section(kSecAllocs), why) && check_dispatch(s->section(kSecDispatch), why) &&
               mem_ss_check(s->section(kSecHeaps), why) && ax_ss_check(s->section(kSecAudio), why) &&
               gx2_ss_check(s->section(kSecGx2), why);
@@ -714,8 +803,17 @@ uint32_t snap_ld32(uint32_t ea) {
             if (ea - g.base < g.size) return 0;
         return ld32(ea);  // not part of the snapshot (code, host-only memory)
     }
+    // the chunk unpacked once while it's read (the checks read a few words from each of a few chunks)
+    static uint64_t cachedSerial = 0;
+    static uint32_t cachedBase = 0;
+    static std::vector<uint8_t> buf(kChunk);
+    if (cachedSerial != g_check_serial || cachedBase != base) {
+        if (!chunk_data(it->second, buf.data())) memset(buf.data(), 0, kChunk);
+        cachedSerial = g_check_serial;
+        cachedBase = base;
+    }
     uint32_t v;
-    memcpy(&v, it->second + (ea - base), 4);
+    memcpy(&v, buf.data() + (ea - base), 4);
     return __builtin_bswap32(v);
 }
 
@@ -763,7 +861,8 @@ void request_load(int slot) {
             g_loading = false;
             return;
         }
-        LOG("[savestate] slot %d: read and decompressed %.1f MB in %.0f ms", slot, s->payload.size() / 1048576.0,
+        LOG("[savestate] slot %d: read %.1f MB (%zu memory chunks, version %u) in %.0f ms", slot,
+            (s->payload.size() + s->blob.size()) / 1048576.0, s->chunks.size(), s->h.version,
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
         std::lock_guard<std::mutex> lk(g_mu);
         g_load_ready = s;

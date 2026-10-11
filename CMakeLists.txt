@@ -66,9 +66,10 @@ else()
 endif()
 target_compile_options(cemu_latte PRIVATE -w -O2)
 
-# ---- vendored zstd (BSD): its decoder only, for Cemu .wua archives (runtime/src/disc/wua.cpp)
+# ---- vendored zstd 1.5.7 (BSD): Cemu .wua archives (runtime/src/disc/wua.cpp) and save states
+# (savestate.cpp); without its multithreaded compressor
 set(ZSTD_DIR ${CMAKE_SOURCE_DIR}/runtime/third_party/zstd/lib)
-file(GLOB ZSTD_SOURCES CONFIGURE_DEPENDS ${ZSTD_DIR}/common/*.c ${ZSTD_DIR}/decompress/*.c)
+file(GLOB ZSTD_SOURCES CONFIGURE_DEPENDS ${ZSTD_DIR}/common/*.c ${ZSTD_DIR}/decompress/*.c ${ZSTD_DIR}/compress/*.c)
 add_library(zstd_dec STATIC ${ZSTD_SOURCES})
 target_include_directories(zstd_dec PUBLIC ${ZSTD_DIR})
 target_compile_definitions(zstd_dec PRIVATE ZSTD_DISABLE_ASM ZSTD_LEGACY_SUPPORT=0)
@@ -172,7 +173,7 @@ elseif(ANDROID)
     "This project|MPL-2.0|${CMAKE_SOURCE_DIR}/LICENSE"
     "Cemu (GPU address library and shader decompiler, in runtime/third_party/cemu)|MPL-2.0 (same license text as this project)|"
     "{fmt}|MIT|${CMAKE_SOURCE_DIR}/runtime/third_party/fmt/LICENSE"
-    "Zstandard (zstd, reads .wua archives)|BSD-3-Clause|${CMAKE_SOURCE_DIR}/runtime/third_party/zstd/LICENSE"
+    "Zstandard (zstd: .wua archives, save states)|BSD-3-Clause|${CMAKE_SOURCE_DIR}/runtime/third_party/zstd/LICENSE"
     "glslang|BSD-3-Clause and others|${glslang_SOURCE_DIR}/LICENSE.txt"
     "Vulkan Memory Allocator|MIT|${vma_SOURCE_DIR}/LICENSE.txt"
     "volk|MIT|${volk_SOURCE_DIR}/LICENSE.md"
