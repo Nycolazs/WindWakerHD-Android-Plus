@@ -314,25 +314,6 @@ std::string stage_name() {
 }
 
 // ---------------------------------------------------------------- memory
-// bytes capture_memory() can write at most: the chunks with resident pages. Reserved up front so the
-// payload never reallocates (doubling a 500 MB vector got the app killed for memory on 6 GB phones)
-size_t memory_bound() {
-    std::vector<char> vec(kChunk / getpagesize() + 1);
-    size_t n = 64;
-    for (auto& g : regions()) {
-        n += 12;
-        for (uint32_t off = 0; off < g.size; off += kChunk) {
-            if (page_residency(mem::ptr(g.base + off), kChunk, vec.data()) == 0) {
-                bool touched = false;
-                for (size_t i = 0; i < kChunk / (size_t)getpagesize(); i++) touched |= vec[i] != 0;
-                if (!touched) continue;
-            }
-            n += 4 + kChunk;
-        }
-    }
-    return n;
-}
-
 void capture_memory(Writer& w) {
     auto rs = regions();
     w.u32((uint32_t)rs.size());
@@ -392,34 +373,42 @@ bool write_slot(int slot, const Header& h0, const std::vector<uint8_t>& payload)
     size_t nblocks = (payload.size() + kBlock - 1) / kBlock;
     h.blocks = (uint32_t)nblocks;
     h.raw_size = payload.size();
-    std::vector<std::vector<uint8_t>> out(nblocks);
-    std::vector<std::thread> pool;
-    std::atomic<size_t> next{0};
-    unsigned nt = std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
-    for (unsigned t = 0; t < nt; t++)
-        pool.emplace_back([&] {
-            std::vector<uint8_t> scratch(scratch_size(true));
-            for (size_t i; (i = next++) < nblocks;) {
-                size_t raw = std::min<size_t>(kBlock, payload.size() - i * kBlock);
-                std::vector<uint8_t>& o = out[i];
-                o.resize(8 + raw + raw / 8 + 1024);
-                size_t n = compress_block(o.data() + 8, o.size() - 8, payload.data() + i * kBlock, raw, scratch.data());
-                uint32_t hdr[2] = {(uint32_t)raw, (uint32_t)n};
-                if (!n || n >= raw) {  // incompressible: stored
-                    memcpy(o.data() + 8, payload.data() + i * kBlock, raw);
-                    hdr[1] = 0;
-                    n = raw;
-                }
-                memcpy(o.data(), hdr, 8);
-                std::vector<uint8_t>(o.begin(), o.begin() + 8 + n).swap(o);  // gives back the unused capacity
-            }
-        });
-    for (auto& t : pool) t.join();
     std::string tmp = slot_path(slot, "tmp");
     FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) return false;
     bool ok = fwrite(&h, sizeof h, 1, f) == 1;
-    for (auto& o : out) ok = ok && fwrite(o.data(), 1, o.size(), f) == o.size();
+    // one batch of blocks per round (a block for each thread), written in order: the compressed
+    // state isn't held in memory as a whole (with the 580 MB payload that got the game killed for
+    // low memory on a 6 GB phone)
+    unsigned nt = std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
+    std::vector<std::vector<uint8_t>> out(nt), scratch(nt);
+    std::vector<size_t> len(nt);
+    for (unsigned t = 0; t < nt; t++) {
+        out[t].resize(8 + kBlock + kBlock / 8 + 1024);
+        scratch[t].resize(scratch_size(true));
+    }
+    for (size_t first = 0; first < nblocks && ok; first += nt) {
+        const unsigned batch = (unsigned)std::min<size_t>(nt, nblocks - first);
+        auto work = [&](unsigned t) {
+            const size_t i = first + t;
+            const size_t raw = std::min<size_t>(kBlock, payload.size() - i * kBlock);
+            std::vector<uint8_t>& o = out[t];
+            size_t n = compress_block(o.data() + 8, o.size() - 8, payload.data() + i * kBlock, raw, scratch[t].data());
+            uint32_t hdr[2] = {(uint32_t)raw, (uint32_t)n};
+            if (!n || n >= raw) {  // incompressible: stored
+                memcpy(o.data() + 8, payload.data() + i * kBlock, raw);
+                hdr[1] = 0;
+                n = raw;
+            }
+            memcpy(o.data(), hdr, 8);
+            len[t] = 8 + n;
+        };
+        std::vector<std::thread> pool;
+        for (unsigned t = 1; t < batch; t++) pool.emplace_back(work, t);
+        work(0);
+        for (auto& th : pool) th.join();
+        for (unsigned t = 0; t < batch && ok; t++) ok = fwrite(out[t].data(), 1, len[t], f) == len[t];
+    }
     ok = fclose(f) == 0 && ok;
     if (ok) ok = rename(tmp.c_str(), slot_path(slot).c_str()) == 0;
     else unlink(tmp.c_str());
@@ -446,37 +435,40 @@ std::shared_ptr<Snapshot> read_slot(int slot, std::string& why) {
     auto s = std::make_shared<Snapshot>();
     s->slot = slot;
     if (!read_header(f, s->h, why)) { fclose(f); return nullptr; }
-    std::vector<std::vector<uint8_t>> blocks(s->h.blocks);
-    std::vector<uint32_t> raws(s->h.blocks), comps(s->h.blocks);
+    s->payload.resize(s->h.raw_size);
+    // a batch of blocks per round (one for each thread): the compressed file isn't held as a whole
+    unsigned nt = std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
+    std::vector<std::vector<uint8_t>> blocks(nt), scratch(nt);
+    std::vector<uint32_t> raws(nt), comps(nt);
+    for (unsigned t = 0; t < nt; t++) scratch[t].resize(scratch_size(false));
     bool ok = true;
-    for (uint32_t i = 0; i < s->h.blocks && ok; i++) {
-        uint32_t hdr[2];
-        ok = fread(hdr, 8, 1, f) == 1 && hdr[0] <= kBlock;
+    std::atomic<bool> bad{false};
+    for (uint32_t first = 0; first < s->h.blocks && ok && !bad; first += nt) {
+        const unsigned batch = std::min<uint32_t>(nt, s->h.blocks - first);
+        for (unsigned t = 0; t < batch && ok; t++) {
+            uint32_t hdr[2];
+            ok = fread(hdr, 8, 1, f) == 1 && hdr[0] <= kBlock;
+            if (!ok) break;
+            raws[t] = hdr[0];
+            comps[t] = hdr[1];
+            blocks[t].resize(hdr[1] ? hdr[1] : hdr[0]);
+            ok = fread(blocks[t].data(), 1, blocks[t].size(), f) == blocks[t].size();
+        }
         if (!ok) break;
-        raws[i] = hdr[0];
-        comps[i] = hdr[1];
-        blocks[i].resize(hdr[1] ? hdr[1] : hdr[0]);
-        ok = fread(blocks[i].data(), 1, blocks[i].size(), f) == blocks[i].size();
+        auto work = [&](unsigned t) {
+            const size_t i = first + t;
+            if (i * kBlock + raws[t] > s->payload.size()) { bad = true; return; }
+            uint8_t* dst = s->payload.data() + i * (size_t)kBlock;
+            if (!comps[t]) { memcpy(dst, blocks[t].data(), raws[t]); return; }
+            if (decompress_block(dst, raws[t], blocks[t].data(), comps[t], scratch[t].data()) != raws[t]) bad = true;
+        };
+        std::vector<std::thread> pool;
+        for (unsigned t = 1; t < batch; t++) pool.emplace_back(work, t);
+        work(0);
+        for (auto& th : pool) th.join();
     }
     fclose(f);
     if (!ok) { why = "file is truncated"; return nullptr; }
-    s->payload.resize(s->h.raw_size);
-    std::atomic<size_t> next{0};
-    std::atomic<bool> bad{false};
-    std::vector<std::thread> pool;
-    unsigned nt = std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
-    for (unsigned t = 0; t < nt; t++)
-        pool.emplace_back([&] {
-            std::vector<uint8_t> scratch(scratch_size(false));
-            for (size_t i; (i = next++) < blocks.size();) {
-                uint8_t* dst = s->payload.data() + i * (size_t)kBlock;
-                if ((size_t)i * kBlock + raws[i] > s->payload.size()) { bad = true; continue; }
-                if (!comps[i]) { memcpy(dst, blocks[i].data(), raws[i]); continue; }
-                size_t n = decompress_block(dst, raws[i], blocks[i].data(), comps[i], scratch.data());
-                if (n != raws[i]) bad = true;
-            }
-        });
-    for (auto& t : pool) t.join();
     if (bad || !s->parse()) { why = "file is corrupt"; return nullptr; }
     return s;
 }
@@ -570,7 +562,12 @@ bool do_save(int slot) {
         return true;
     }
     auto payload = std::make_shared<Writer>();
-    payload->b.reserve(64u << 20);
+    // room for every memory region at once: only the bytes written take memory, and the buffer never
+    // grows (growing past the 512 MB reserved before copied it, with both copies alive; a state is
+    // ~580 MB)
+    size_t bound = 64u << 20;
+    for (auto& g : regions()) bound += g.size + (g.size / kChunk) * 4 + 16;
+    payload->b.reserve(bound);
     put_section(*payload, kSecThreads, threads_w);
     Writer w;
     mem_ss_save(w);
@@ -591,7 +588,6 @@ bool do_save(int slot) {
     save_dispatch(w);
     put_section(*payload, kSecDispatch, w);
     // memory last, written straight into the payload
-    payload->b.reserve(payload->b.size() + 12 + memory_bound());
     payload->u32(kSecMemory);
     size_t len_at = payload->b.size();
     payload->u64(0);
