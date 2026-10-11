@@ -29,6 +29,7 @@ struct CompileOptions {
 
 struct CompileResult {
     size_t functions = 0, modules = 0, instructions = 0, unhandled = 0;
+    size_t localized = 0, localFallback = 0;  // functions with registers in locals, and those kept in the struct
     double seconds = 0;
 };
 

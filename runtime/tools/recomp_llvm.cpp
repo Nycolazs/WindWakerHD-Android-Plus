@@ -33,7 +33,8 @@ int main(int argc, char** argv) {
     recomp::CompileResult res;
     std::string err;
     bool ok = recomp::compile_game(opt, res, err);
-    printf("%zu functions, %zu modules, %zu instructions (%zu unhandled) in %.1f s%s%s\n", res.functions, res.modules, res.instructions,
-           res.unhandled, res.seconds, ok ? "" : ": ", ok ? "" : err.c_str());
+    printf("%zu functions, %zu modules, %zu instructions (%zu unhandled) in %.1f s; registers in locals: %zu functions, %zu kept in the "
+           "struct%s%s\n", res.functions, res.modules, res.instructions, res.unhandled, res.seconds, res.localized, res.localFallback,
+           ok ? "" : ": ", ok ? "" : err.c_str());
     return ok ? 0 : 1;
 }

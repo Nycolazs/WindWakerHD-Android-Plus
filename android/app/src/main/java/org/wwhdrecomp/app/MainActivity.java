@@ -79,6 +79,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             setenv("WWHD_LANGUAGE", gameLanguage());
             applyFrameGenSettings();
             setenv("WWHD_APP_VERSION", CrashLogs.appVersion(this));  // the crash log's name
+            // command recording thread: automatic (the renderer decides), on or off (wwhd.env still wins)
+            int recordThread = prefs.getInt("record_thread", 0);
+            if (recordThread != 0) setenv("WWHD_RECORD_THREAD", recordThread == 1 ? "1" : "0");
             applyEnvironment();
             CrashLogs.deleteShared(this, prefs);  // shared in an earlier run
             // a shader dump (WWHD_DUMP_SHADERS=<files>/shaders, debugging) left from an earlier start
@@ -123,6 +126,15 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     void setGameLanguage(String l) {
         prefs.edit().putString("language", l).commit();
+    }
+
+    // the command recording thread applies from the next start
+    void setRecordThread(int mode) {
+        if (mode == prefs.getInt("record_thread", 0)) return;
+        prefs.edit().putInt("record_thread", mode).commit();
+        new GameDialog(this).title(R.string.opt_record_thread).message(R.string.record_thread_restart)
+                .button(R.string.gpu_driver_later, null)
+                .button(R.string.res_restart_now, this::restartApp).show();
     }
 
     /** after the options menu closed with another language than it opened with */
@@ -231,6 +243,13 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             runCompile();
             return;
         }
+        // the last run ended unexpectedly: offer its log before the game starts (a game that closes
+        // again right after loading leaves no time to share it later)
+        if (!crashOffered) {
+            crashOffered = true;
+            CrashLogs.recordExit(this, prefs);
+            if (CrashLogs.offerNew(this, prefs, this::checkAndStart)) return;
+        }
         File base = baseDir();
         // testing: WWHD_CLEAR_SHADERS=1 (an intent extra) starts as with "Delete shader cache"
         if (Os.getenv("WWHD_CLEAR_SHADERS") != null) Backup.deleteTree(new File(getNoBackupFilesDir(), "shadercache"));
@@ -251,8 +270,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (failedDriver != null)
             new GameDialog(this).title(R.string.opt_gpu_driver).message(getString(R.string.gpu_driver_failed, failedDriver))
                     .button(R.string.opt_ok, null).show();
-        else CrashLogs.offerNew(this, prefs);  // the last run crashed
     }
+
+    private boolean crashOffered;  // once per process: the offer before the game starts
 
     // ------------------------------------------------------------------ GPU driver (Adreno)
     // A driver package the user installed (GpuDrivers), used instead of the system driver from the
@@ -1321,6 +1341,24 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     private boolean frameGenOn() { return prefs.getBoolean("fg_enabled", false) && frameGenDll().exists(); }
 
+    // the display's highest refresh rate (at least 60)
+    int maxRefreshHz() {
+        float hz = 60;
+        for (android.view.Display.Mode m : getWindowManager().getDefaultDisplay().getSupportedModes())
+            hz = Math.max(hz, m.getRefreshRate());
+        return Math.round(hz);
+    }
+
+    // frames shown per second without frame generation (the Frame rate setting)
+    int shownFps() {
+        switch (prefs.getBoolean("fg_enabled", false) ? 0 : savedFpsMode()) {
+            case 1: case 2: case 3: return 60;
+            case 4: return 40;
+            case 5: return 120;
+            default: return 30;
+        }
+    }
+
     private void applyFrameGenSettings() {
         // the renderer generates frames only if the display can show them (also when switched on later)
         float hz = 60;
@@ -1380,18 +1418,28 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         frameGenChanged();
     }
 
-    /** 0: 30 fps, 1: 60 fps (frame interpolation), 2: adaptive 60 (30 while the device can't hold 60) */
-    /** 40 fps needs a panel that runs at 120 Hz (a frame every 3 refreshes) */
+    /** 40 and 120 fps need a panel that runs at 120 Hz (40 fps: a frame every 3 refreshes) */
     boolean has120Hz() {
         for (android.view.Display.Mode m : getWindowManager().getDefaultDisplay().getSupportedModes())
             if (Math.abs(m.getRefreshRate() - 120f) < 1.5f) return true;
         return false;
     }
 
-    /** the saved frame rate mode; 40 fps (4) falls back to 60 where the panel has no 120 Hz */
+    /**
+     * the saved frame rate mode (fps60.cpp): 0 30 fps, 1 60 fps (frame interpolation, paced), 3 true
+     * 60, 4 40 fps, 5 120 fps; 2 (adaptive 60 of older versions) is 60 now, and 40/120 fps fall back
+     * to 60 where the panel has no 120 Hz
+     */
     int savedFpsMode() {
         int m = prefs.getInt("fps_mode", 0);
-        return m == 4 && !has120Hz() ? 1 : m;
+        return m == 2 || ((m == 4 || m == 5) && !has120Hz()) ? 1 : m;
+    }
+
+    String fpsModeName(int m) {
+        String[] names = getResources().getStringArray(R.array.fps_modes);
+        if (m == 4) return getString(R.string.fps_40);
+        if (m == 5) return getString(R.string.fps_120);
+        return names[Math.min(m, names.length - 1)];
     }
 
     void setFpsMode(int m) {

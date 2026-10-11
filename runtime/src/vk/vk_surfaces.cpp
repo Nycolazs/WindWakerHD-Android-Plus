@@ -8,6 +8,7 @@
 #include "Cafe/HW/Latte/LatteAddrLib/LatteAddrLib.h"
 #include "gx2/gx2.h"
 #include "gx2_texture_regs.h"
+#include "mem_writes.h"
 #include "runtime.h"
 #include "vk.h"
 
@@ -677,19 +678,37 @@ Surface* sampled_texture(const uint32_t* w, bool isDepthSampler) {
 }
 
 // a sampled CPU texture: upload it if its memory changed (checked once per frame)
+// The sparse sample (256 words spread over the texture, nearly all cache misses: ~5% of the render
+// thread at 60 fps) is skipped while the game hasn't written the texture's pages since the last
+// comparison (mem_writes.h, as vertex buffers); still taken on one frame in 16 (spread by address),
+// counting what the tracking missed, and after our own writes (lastCheckedFrame ~0: copies, readbacks).
+static const bool g_track_texture_writes = [] { const char* e = getenv("WWHD_TRACK_WRITES"); return !e || atoi(e) != 0; }();
+uint64_t g_stat_texture_stale;
 static Surface* check_texture(Surface* s) {
     if (s && !s->gpuWritten && s->lastCheckedFrame != R.frame) {
+        const bool forced = s->lastCheckedFrame == ~0ull;
         s->lastCheckedFrame = R.frame;
         // full hash only when new, invalidated, every 64 frames, or when a sparse sample changed
         bool full = s->dirty || !s->dataSize || ((R.frame + (s->addr >> 12)) & 63) == 0;
         if (!full) {
+            const bool verify = forced || ((R.frame + (s->addr >> 12)) & 15) == 0;
+            const bool tracked = g_track_texture_writes && memw::unchanged_since(s->addr, s->dataSize, s->checkGen);
+            if (tracked && !verify) return s;
+            const uint32_t gen = memw::now();  // before reading
             uint64_t h = sparse_hash(s);
-            if (h != s->sparseHash) full = true;
+            if (h != s->sparseHash) {
+                full = true;
+                if (tracked && !forced) g_stat_texture_stale++;
+            } else {
+                s->checkGen = gen;
+            }
         }
         if (full) {
             g_stat_full_checks++;
+            const uint32_t gen = memw::now();
             upload_surface(s);
             s->sparseHash = sparse_hash(s);
+            s->checkGen = gen;
             s->dirty = false;
         }
     }

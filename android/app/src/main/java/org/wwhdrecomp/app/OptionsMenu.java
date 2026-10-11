@@ -218,8 +218,12 @@ final class OptionsMenu extends Dialog {
         String err = Native.frameGenError();
         if (a.prefs.getBoolean("fg_enabled", false) && !err.isEmpty()) note(a.getString(R.string.fg_error, err));
         toggle(R.string.opt_framegen, 0, a.prefs.getBoolean("fg_enabled", false), on -> a.setFrameGen("fg_enabled", on));
+        // the rate frame generation reaches: frames shown without it (30, or interpolated) times the
+        // multiplier; above the display's refresh rate it generates nothing (the renderer checks)
         String[] mult = new String[3];
-        for (int m = 2; m <= 4; m++) mult[m - 2] = a.getString(R.string.fg_multiplier_item, m, 30 * m);
+        int base = a.shownFps(), maxHz = a.maxRefreshHz();
+        for (int m = 2; m <= 4; m++)
+            mult[m - 2] = a.getString(base * m > maxHz * 1.1 ? R.string.fg_multiplier_item_over : R.string.fg_multiplier_item, m, base * m);
         choice(R.string.opt_fg_multiplier, R.string.opt_fg_multiplier_hint, mult, a.prefs.getInt("fg_multiplier", 2) - 2,
                 i -> a.setFrameGenMultiplier(i + 2));
         String[] modes = {a.getString(R.string.fg_performance), a.getString(R.string.fg_quality)};
@@ -439,13 +443,15 @@ final class OptionsMenu extends Dialog {
     private void graphics() {
         String[] res = new String[MainActivity.RES_SCALES.length];
         for (int i = 0; i < res.length; i++) res[i] = a.resolutionLabel(MainActivity.RES_SCALES[i]);
-        String[] fpsModes = a.getResources().getStringArray(R.array.fps_modes);
-        if (a.has120Hz()) {  // 40 fps (mode 4): only on 120 Hz panels
-            fpsModes = java.util.Arrays.copyOf(fpsModes, fpsModes.length + 1);
-            fpsModes[fpsModes.length - 1] = a.getString(R.string.fps_40);
+        // 30, 60 and true 60 everywhere; 120 and 40 fps only on 120 Hz panels (fps60.cpp's modes)
+        int[] fpsModes = a.has120Hz() ? new int[] {0, 1, 5, 4, 3} : new int[] {0, 1, 3};
+        String[] fpsNames = new String[fpsModes.length];
+        int fpsMode = a.prefs.getBoolean("fg_enabled", false) ? 0 : a.savedFpsMode(), fpsIndex = 0;
+        for (int i = 0; i < fpsModes.length; i++) {
+            fpsNames[i] = a.fpsModeName(fpsModes[i]);
+            if (fpsModes[i] == fpsMode) fpsIndex = i;
         }
-        choice(R.string.opt_fps, R.string.opt_fps_hint, fpsModes,
-               a.prefs.getBoolean("fg_enabled", false) ? 0 : a.savedFpsMode(), a::setFpsMode);
+        choice(R.string.opt_fps, R.string.opt_fps_hint, fpsNames, fpsIndex, i -> a.setFpsMode(fpsModes[i]));
         choice(R.string.opt_drawdone, R.string.opt_drawdone_hint, a.getResources().getStringArray(R.array.drawdone_modes),
                a.prefs.getInt("drawdone_mode", 0), i -> {
                    a.prefs.edit().putInt("drawdone_mode", i).apply();
@@ -497,6 +503,8 @@ final class OptionsMenu extends Dialog {
                 () -> openPage(this::perfPage));
         if (GpuDrivers.supported())
             submenu(R.string.opt_gpu_driver, R.string.opt_gpu_driver_hint, a.gpuDriverLabel(), () -> openPage(this::gpuDriverPage));
+        choice(R.string.opt_record_thread, R.string.opt_record_thread_hint, a.getResources().getStringArray(R.array.record_thread_modes),
+                a.prefs.getInt("record_thread", 0), a::setRecordThread);
         submenu(R.string.opt_shaders, R.string.opt_shaders_hint, "", a::askClearShaders);
         if (a.debuggable())  // a debugging aid: debug builds only
             submenu(R.string.opt_capture, R.string.opt_capture_hint, "", () -> Native.setOption("capture", 1));

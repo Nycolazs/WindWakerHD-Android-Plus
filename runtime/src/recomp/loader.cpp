@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -28,6 +29,7 @@
 #include "../disc/crypto.h"
 #include "../release.h"
 #include "compile.h"
+#include "locals.h"
 #include "emit.h"
 #include "program.h"
 #include "recomp_table.h"
@@ -137,7 +139,7 @@ std::string code_cache_key(const std::string& rpxPath) {
     disc::sha1((const uint8_t*)rpx.data(), rpx.size(), h);
     disc::sha1((const uint8_t*)wwhd_hooks, (size_t)(wwhd_hooks_end - wwhd_hooks), hk);
     std::string key = std::string("recompiler ") + WWHD_RECOMP_VERSION + "\nhooks " + hex(hk, 20) + "\nrpx " + hex(h, 20) + "\ncpu " +
-                      host_features() + "\nopt " + std::to_string(kDefaultOptLevel) + "\n";
+                      host_features() + "\nopt " + std::to_string(kDefaultOptLevel) + "\n" + code_switches() + "\n";
     // another release: its address map decides the function names
     uint32_t entry = rpx.size() >= 0x1C ? (uint8_t)rpx[0x18] << 24 | (uint8_t)rpx[0x19] << 16 | (uint8_t)rpx[0x1A] << 8 | (uint8_t)rpx[0x1B] : 0;
     if (release::known_entry(entry) && entry != kSupportedEntryPoint) {
@@ -270,6 +272,17 @@ bool load_game_code(const std::string& rpxPath, const std::string& dir, std::str
             return false;
         }
         imports.push_back({slot, im.function ? slot : im.dataAddr, im.lib.c_str(), im.name.c_str(), im.function, fn});
+    }
+    // debug: WWHD_PERF_MAP=1 writes <code dir>/perf.map (host address, guest address, sorted) to
+    // attribute profiler samples in the game code to its functions
+    if (getenv("WWHD_PERF_MAP")) {
+        std::vector<std::pair<uintptr_t, uint32_t>> m;
+        for (auto& f : funcs) m.push_back({(uintptr_t)f.fn, f.addr});
+        std::sort(m.begin(), m.end());
+        if (FILE* out = fopen((dir + "/perf.map").c_str(), "w")) {
+            for (auto& [h, g] : m) fprintf(out, "%lx %08X\n", (unsigned long)h, release::usa_code(g) ? release::usa_code(g) : g);
+            fclose(out);
+        }
     }
     g_recomp_funcs = funcs.data();
     g_recomp_func_count = (unsigned)funcs.size();

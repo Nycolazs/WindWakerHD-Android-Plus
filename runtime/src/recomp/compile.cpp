@@ -12,6 +12,8 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/TargetParser/Host.h>
+#include <llvm/Transforms/IPO/AlwaysInliner.h>
+#include <llvm/Transforms/Scalar/InstSimplifyPass.h>
 
 #if defined(__aarch64__) && defined(__linux__)
 #include <sys/auxv.h>
@@ -25,15 +27,17 @@
 
 #include "../release.h"
 #include "emit.h"
+#include "locals.h"
 #include "program.h"
 
 namespace recomp {
 
 // Code for the CPU we run on: generic AArch64 plus only the extensions the kernel reports (a CPU
 // model would imply some the firmware disables, e.g. SVE on Snapdragons); the model itself is used
-// for scheduling only ("tune-cpu"). SVE/SVE2 only where the kernel enables them (MediaTek
-// Dimensity, Google Tensor); the code stays vector-length agnostic. SME stays off: streaming
-// mode isn't something compiled game code can use.
+// for scheduling only ("tune-cpu"). SVE/SVE2 are off: code compiled with them never ran on a
+// tested device, and a crash on a Dimensity 8350 points at it (issue #24); WWHD_SVE=1 uses them where
+// the kernel enables them (MediaTek Dimensity, Google Tensor; the code stays vector-length
+// agnostic). SME stays off: streaming mode isn't something compiled game code can use.
 std::string host_features() {
     std::string f;
 #if defined(__aarch64__) && defined(__linux__)
@@ -44,7 +48,8 @@ std::string host_features() {
     if (hw & (1UL << 15)) f += "+rcpc,";      // HWCAP_LRCPC
     if (hw & (1UL << 7)) f += "+rdm,";        // HWCAP_ASIMDRDM
     unsigned long hw2 = getauxval(AT_HWCAP2);
-    const bool sve = hw & (1UL << 22);        // HWCAP_SVE
+    static const bool sveOn = getenv("WWHD_SVE") && atoi(getenv("WWHD_SVE")) != 0;
+    const bool sve = sveOn && (hw & (1UL << 22));  // HWCAP_SVE
     const bool sve2 = sve && (hw2 & (1UL << 1));  // HWCAP2_SVE2
     f += sve ? "+sve," : "-sve,";
     f += sve2 ? "+sve2," : "-sve2,";
@@ -87,7 +92,7 @@ bool compile_game(const CompileOptions& opt, CompileResult& res, std::string& er
         modules.emplace_back(prog.entries.begin() + i, prog.entries.begin() + std::min(prog.entries.size(), i + opt.perModule));
     llvm::sys::fs::create_directories(opt.outDir);
     if (opt.modulesTotal) *opt.modulesTotal = modules.size();
-    std::atomic<size_t> next{0}, instructions{0}, unhandled{0};
+    std::atomic<size_t> next{0}, instructions{0}, unhandled{0}, localized{0}, localFallback{0};
     std::atomic<bool> failed{false};
     std::mutex errm;
     auto fail = [&](const std::string& why) {
@@ -136,6 +141,16 @@ bool compile_game(const CompileOptions& opt, CompileResult& res, std::string& er
             pb.registerFunctionAnalyses(fam);
             pb.registerLoopAnalyses(lam);
             pb.crossRegisterProxies(lam, fam, cgam, mam);
+            {  // the ops inlined and their decoding folded first: the register copy's accesses are then known
+                llvm::ModulePassManager mpm;
+                mpm.addPass(llvm::AlwaysInlinerPass());
+                mpm.addPass(llvm::createModuleToFunctionPassAdaptor(llvm::InstSimplifyPass()));
+                mpm.run(*m, mam);
+            }
+            LocalsStats ls;
+            localize_registers(*m, locals_options(), ls);
+            localized += ls.functions;
+            localFallback += ls.fallback;
             pb.buildPerModuleDefaultPipeline(opt.optLevel >= 3 ? llvm::OptimizationLevel::O3 : llvm::OptimizationLevel::O2).run(*m, mam);
             std::string path = opt.outDir + "/" + name + ".o", tmp = path + ".part";
             {
@@ -160,6 +175,8 @@ bool compile_game(const CompileOptions& opt, CompileResult& res, std::string& er
     res.modules = modules.size();
     res.instructions = instructions;
     res.unhandled = unhandled;
+    res.localized = localized;
+    res.localFallback = localFallback;
     res.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     return !failed;
 }

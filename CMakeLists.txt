@@ -188,8 +188,8 @@ elseif(ANDROID)
     endif()
     llvm_map_components_to_libnames(WWHD_LLVM_LIBS ${WWHD_LLVM_COMPONENTS})
     target_sources(wwhd PRIVATE runtime/src/recomp/program.cpp runtime/src/recomp/decode.cpp runtime/src/recomp/emit.cpp
-                                runtime/src/recomp/compile.cpp ${CMAKE_BINARY_DIR}/recomp_data.S)
-    set_source_files_properties(runtime/src/recomp/emit.cpp runtime/src/recomp/compile.cpp PROPERTIES
+                                runtime/src/recomp/locals.cpp runtime/src/recomp/compile.cpp ${CMAKE_BINARY_DIR}/recomp_data.S)
+    set_source_files_properties(runtime/src/recomp/emit.cpp runtime/src/recomp/locals.cpp runtime/src/recomp/compile.cpp PROPERTIES
                                 INCLUDE_DIRECTORIES "${LLVM_INCLUDE_DIRS}")
     target_compile_definitions(wwhd PRIVATE WWHD_RECOMP=1 WWHD_RELEASE_MAPS=1)  # release.cpp: the EUR and JPN address maps
     target_link_libraries(wwhd PRIVATE ${WWHD_LLVM_LIBS})
@@ -222,10 +222,12 @@ wwhd_hooks:
     .incbin \"${HOOKS_DIR}/hooks_mods.txt\"
     .byte 10
     .incbin \"${HOOKS_DIR}/hooks_aspect.txt\"
+    .byte 10
+    .incbin \"${HOOKS_DIR}/hooks_perf.txt\"
 wwhd_hooks_end:
 ")
     set_source_files_properties(${CMAKE_BINARY_DIR}/recomp_data.S PROPERTIES OBJECT_DEPENDS
-      "${OPS_BC};${HOOKS_DIR}/hooks.txt;${HOOKS_DIR}/hooks_climb.txt;${HOOKS_DIR}/hooks_mods.txt;${HOOKS_DIR}/hooks_aspect.txt;${HOOKS_DIR}/release_eur.txt;${HOOKS_DIR}/release_jpn.txt")
+      "${OPS_BC};${HOOKS_DIR}/hooks.txt;${HOOKS_DIR}/hooks_climb.txt;${HOOKS_DIR}/hooks_mods.txt;${HOOKS_DIR}/hooks_aspect.txt;${HOOKS_DIR}/hooks_perf.txt;${HOOKS_DIR}/release_eur.txt;${HOOKS_DIR}/release_jpn.txt")
 
     if(WWHD_DEVICE_RECOMP)
       # The game code is linked at startup (loader.cpp). The game functions the runtime calls
@@ -258,7 +260,8 @@ wwhd_hooks_end:
       # Cpu layout in ppc.h) and LLVM; the hook lists are hashed at runtime (loader.cpp)
       set(RECOMP_VERSION_FILES runtime/src/recomp/compile.cpp runtime/src/recomp/compile.h runtime/src/recomp/decode.cpp
           runtime/src/recomp/decode.h runtime/src/recomp/emit.cpp runtime/src/recomp/emit.h runtime/src/recomp/program.cpp
-          runtime/src/recomp/program.h runtime/src/recomp/ops.c runtime/include/ppc.h)
+          runtime/src/recomp/program.h runtime/src/recomp/locals.cpp runtime/src/recomp/locals.h runtime/src/recomp/ops.c
+          runtime/include/ppc.h)
       list(TRANSFORM RECOMP_VERSION_FILES PREPEND ${CMAKE_SOURCE_DIR}/)
       string(REPLACE ";" "|" files_arg "${RECOMP_VERSION_FILES}")
       add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/recomp_version.h

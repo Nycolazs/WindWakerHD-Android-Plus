@@ -18,6 +18,7 @@
 #include "../crash_info.h"
 #include "../gx2/gx2.h"
 #include "../input.h"
+#include "../interp.h"
 #include "../mods/climb.h"
 #include "../mods/mods.h"
 #include "../motion.h"
@@ -269,6 +270,7 @@ JNI_FN(jbyteArray, parseKey)(JNIEnv* env, jclass, jbyteArray data) {
 #include <sys/sysinfo.h>
 
 #include "../recomp/compile.h"
+#include "../recomp/locals.h"
 extern "C" const char wwhd_ops_bc[], wwhd_ops_bc_end[], wwhd_hooks[], wwhd_hooks_end[];  // recomp_data.S
 
 #ifdef WWHD_DEVICE_RECOMP
@@ -317,8 +319,9 @@ static std::string compile_code(const std::string& gameDir, const std::string& o
     progress.join();
     struct rusage ru;
     getrusage(RUSAGE_SELF, &ru);
-    LOG("[recomp] %s: %zu functions, %zu modules, %zu instructions in %.1f s, peak memory %ld MB%s%s", ok ? "done" : "FAILED",
-        res.functions, res.modules, res.instructions, res.seconds, ru.ru_maxrss / 1024, ok ? "" : ": ", ok ? "" : err.c_str());
+    LOG("[recomp] %s: %zu functions, %zu modules, %zu instructions in %.1f s, peak memory %ld MB; registers in locals: %zu "
+        "functions, %zu kept in the struct (%s)%s%s", ok ? "done" : "FAILED", res.functions, res.modules, res.instructions, res.seconds,
+        ru.ru_maxrss / 1024, res.localized, res.localFallback, recomp::code_switches().c_str(), ok ? "" : ": ", ok ? "" : err.c_str());
     return ok ? "" : err.empty() ? "failed" : err;
 }
 #endif
@@ -520,6 +523,7 @@ JNI_FN(jint, getOption)(JNIEnv* env, jclass, jstring name) {
     if (n == "fps_mode") return fps60::mode();
     if (n == "drawdone_mode") return gx2::drawdone_mode();
     if (n == "core_mode") return platform::core_mode();
+    if (n == "interp_fps") return interp::mode() == 1 ? interp::fps() : 0;
     if (n == "mod_direct_camera") return mods::direct_camera();
     if (n == "mod_camera_speed") return (int)lroundf(mods::camera_speed() * 100);
     if (n == "mod_first_person") return mods::first_person_wheel();
