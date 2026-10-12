@@ -68,7 +68,10 @@ uint32_t save_address() {
     if (base < 0x10000000 || base > 0x50000000) return 0;
     uint32_t s = base + kSaveOffset;
     uint16_t maxLife = ld16(s), life = ld16(s + 2);
-    if (maxLife < 12 || maxLife > 80 || maxLife % 4 || life > maxLife) return 0;
+    // whole hearts only: Wind Waker counts quarter hearts and a heart piece makes the maximum
+    // 12 + odd (its HUD shows the last, partly filled heart), so a "% 4" test rejected any save
+    // with a piece collected (the icons fell back to plain letters)
+    if (maxLife < 12 || maxLife > 80 || life > maxLife) return 0;
     // the title screen and the file select have placeholder save data (as mods/cheats.cpp checks)
     const char* stage = (const char*)mem::ptr(kStageInfo + 0x5134);
     size_t n = strnlen(stage, 8);
