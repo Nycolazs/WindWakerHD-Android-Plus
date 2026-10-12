@@ -530,6 +530,8 @@ JNI_FN(void, setOption)(JNIEnv* env, jclass, jstring name, jint value) {
     else if (n == "mod_run_mode") mods::set_run_mode(value);
     else if (n == "mod_swim_mode") mods::set_swim_mode(value);
     else if (n == "mod_swim_speed") mods::set_swim_speed(value / 100.0f);
+    // autosave (savestate.cpp): seconds between automatic snapshots into the "Auto" slot (0 = off)
+    else if (n == "autosave_secs") ss::set_autosave_seconds(value);
 }
 
 JNI_FN(jint, getOption)(JNIEnv* env, jclass, jstring name) {
@@ -557,6 +559,7 @@ JNI_FN(jint, getOption)(JNIEnv* env, jclass, jstring name) {
     if (n == "mod_run_mode") return mods::run_mode();
     if (n == "mod_swim_mode") return mods::swim_mode();
     if (n == "mod_swim_speed") return (int)lroundf(mods::swim_speed() * 100);
+    if (n == "autosave_secs") return ss::autosave_seconds();
     return 0;
 }
 

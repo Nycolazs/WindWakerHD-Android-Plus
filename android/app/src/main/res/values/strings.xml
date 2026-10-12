@@ -201,6 +201,16 @@
     <string name="opt_import_hint">Restore them from a folder; an imported game save restarts the game</string>
     <string name="opt_auto_backup">Automatic save backup</string>
     <string name="opt_auto_backup_hint">Keeps a copy of your game save in Downloads/WindWakerHD Saves, which survives uninstalling the app</string>
+    <string name="opt_autosave">Autosave</string>
+    <string name="opt_autosave_hint">Saves a snapshot into the Auto slot at this interval while you play</string>
+    <string-array name="autosave_intervals">
+        <item>Off</item>
+        <item>Every 1 min</item>
+        <item>Every 2 min</item>
+        <item>Every 5 min</item>
+        <item>Every 10 min</item>
+    </string-array>
+    <string name="opt_slot_auto">Auto (autosave)</string>
     <string name="restore_title">Restore your game save?</string>
     <string name="restore_message">There is no game save yet. If you played before (an earlier version of the app, or a backup), pick the folder that holds it: the \"%1$s\" folder in Downloads has the automatic backups, or pick a folder you exported to. You can also do this later in Options > Saves > Import saves.</string>
     <string name="restore_new_game">New game</string>

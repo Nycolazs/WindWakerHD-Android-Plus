@@ -363,6 +363,52 @@ final class OptionsMenu extends Dialog {
             a.prefs.edit().putBoolean("auto_backup", on).apply();
             if (on) a.autoBackup();
         });
+        // autosave: on/off and interval (runtime/src/savestate.cpp); Off is the first entry
+        final int[] AUTO_SECS = {0, 60, 120, 300, 600};
+        int autoCur = 0;
+        {
+            int secs = a.prefs.getInt("autosave_secs", 0);
+            for (int i = 0; i < AUTO_SECS.length; i++) if (AUTO_SECS[i] == secs) { autoCur = i; break; }
+        }
+        choice(R.string.opt_autosave, R.string.opt_autosave_hint,
+               a.getResources().getStringArray(R.array.autosave_intervals), autoCur, i -> {
+                   a.prefs.edit().putInt("autosave_secs", AUTO_SECS[i]).apply();
+                   Native.setOption("autosave_secs", AUTO_SECS[i]);
+               });
+        // the autosave's own slot (kAutoSlot, 6), shown above slot 1
+        {
+            final int slot = 6;
+            String[] info = Native.saveSlotInfo(slot);
+            boolean used = info[0].equals("1"), compatible = info[1].equals("1");
+            String desc = !used ? a.getString(R.string.opt_slot_empty)
+                    : info[3].isEmpty() ? info[2] : info[2] + " · " + info[3];
+            if (used && !compatible) desc = a.getString(R.string.opt_slot_incompatible, desc);
+            LinearLayout r = rowText(a.getString(R.string.opt_slot_auto), desc);
+            ImageView pic = new ImageView(getContext());
+            pic.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            android.graphics.Bitmap bmp = used ? thumbnail(slot) : null;
+            if (bmp != null) pic.setImageBitmap(bmp);
+            GradientDrawable frame = new GradientDrawable();
+            frame.setColor(0x33000000);
+            frame.setCornerRadius(px(6));
+            pic.setBackground(frame);
+            pic.setClipToOutline(true);
+            LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(px(112), px(63));
+            plp.rightMargin = px(16);
+            r.addView(pic, 0, plp);
+            TextView save = smallButton(a.getString(R.string.opt_slot_save), true, v -> saveTo(slot));
+            TextView load = smallButton(a.getString(R.string.opt_slot_load), used && compatible, v -> {
+                Native.loadState(slot);
+                a.showStateResult();
+                dismiss();  // see the game come back
+            });
+            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(px(96), px(44));
+            blp.leftMargin = px(10);
+            r.addView(save, blp);
+            r.addView(load, new LinearLayout.LayoutParams(blp));
+            r.setFocusable(false);
+            r.setBackground(slot(0x1F000000, 0));
+        }
         for (int slot = 1; slot <= 5; slot++) {
             String[] info = Native.saveSlotInfo(slot);
             boolean used = info[0].equals("1"), compatible = info[1].equals("1");

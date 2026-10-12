@@ -50,7 +50,9 @@ constexpr uint32_t kStageKeys = 0x778 + 0x20, kStageDungeonItems = 0x778 + 0x21;
 // the heap block g_dComIfG_gameInfo lives in (pointer in static data; the save data at +0xC92C,
 // 0x145AC92C in USA sessions); USA addresses, release::Data maps them for EUR
 const release::Data kInfoPointer{0x10114B90}, kStageInfo{0x1046F0B0};
+}  // namespace
 
+// public (mods.h): the autosave uses these to know when a file is actually being played
 uint32_t save_addr() {
     static const uint32_t over = getenv("WWHD_CHEAT_SAVE_ADDR") ? (uint32_t)strtoul(getenv("WWHD_CHEAT_SAVE_ADDR"), nullptr, 16) : 0;
     return over ? over : ld32(kInfoPointer) + 0xC92C;
@@ -77,6 +79,7 @@ bool save_loaded(uint32_t s) {
     }
     return n >= 3;
 }
+namespace {
 
 void give(uint32_t s, int slot, uint8_t item, uint8_t got_bits = 1) {
     st8(s + kItems + slot, item);

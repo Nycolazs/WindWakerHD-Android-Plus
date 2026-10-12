@@ -34,7 +34,9 @@
 #include <zlib.h>  // blocks are deflated instead of LZ4 (states don't move between platforms)
 #endif
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
+#include <sched.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -52,6 +54,7 @@
 #include "runtime.h"
 #include "input.h"
 #include "mem_writes.h"
+#include "mods/mods.h"
 #include "release.h"
 
 // module sections
@@ -172,6 +175,7 @@ std::chrono::steady_clock::time_point g_message_time;
 std::atomic<int> g_save_req{0};
 std::shared_ptr<Snapshot> g_load_ready;   // decompressed, waiting for the frame boundary
 std::atomic<bool> g_loading{false};       // a slot file is being read
+std::atomic<int> g_autosave_secs{0};      // autosave interval in seconds (0 = off)
 int g_attempts = 0;
 const Snapshot* g_check = nullptr;        // snapshot whose memory snap_ld32 reads
 
@@ -387,7 +391,7 @@ void restore_memory(const Snapshot& s) {
 }
 
 // ---------------------------------------------------------------- slot files
-bool write_slot(int slot, const Header& h0, const std::vector<uint8_t>& payload) {
+bool write_slot(int slot, const Header& h0, const std::vector<uint8_t>& payload, bool background = false) {
     Header h = h0;
     size_t nblocks = (payload.size() + kBlock - 1) / kBlock;
     h.blocks = (uint32_t)nblocks;
@@ -395,9 +399,13 @@ bool write_slot(int slot, const Header& h0, const std::vector<uint8_t>& payload)
     std::vector<std::vector<uint8_t>> out(nblocks);
     std::vector<std::thread> pool;
     std::atomic<size_t> next{0};
-    unsigned nt = std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
+    // the autosave runs while the game does not expect it: compress on few threads, below the game
+    // and renderer's priority, and give the CPU back between blocks (it used to take all 8 cores for
+    // a couple of seconds and stutter the game)
+    unsigned nt = background ? 2u : std::max(1u, std::min(8u, std::thread::hardware_concurrency()));
     for (unsigned t = 0; t < nt; t++)
         pool.emplace_back([&] {
+            if (background) setpriority(PRIO_PROCESS, (id_t)gettid(), 10);
             std::vector<uint8_t> scratch(scratch_size(true));
             for (size_t i; (i = next++) < nblocks;) {
                 size_t raw = std::min<size_t>(kBlock, payload.size() - i * kBlock);
@@ -412,6 +420,7 @@ bool write_slot(int slot, const Header& h0, const std::vector<uint8_t>& payload)
                 }
                 memcpy(o.data(), hdr, 8);
                 std::vector<uint8_t>(o.begin(), o.begin() + 8 + n).swap(o);  // gives back the unused capacity
+                if (background) sched_yield();
             }
         });
     for (auto& t : pool) t.join();
@@ -612,14 +621,14 @@ bool do_save(int slot) {
     threads::thaw();
     double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     LOG("[savestate] slot %d: captured %.1f MB in %.1f ms (stage %s)", slot, payload->b.size() / 1048576.0, ms, stage.c_str());
-    gfx::request_tv_dump(slot_path(slot, "png"), 0);
+    if (slot != kAutoSlot) gfx::request_tv_dump(slot_path(slot, "png"), 0);  // no thumbnail stall on the autosave
     // compress and write in the background; the game continues
     std::thread([slot, h, payload, stage] {
         auto t1 = std::chrono::steady_clock::now();
         bool ok;
         {
             std::lock_guard<std::mutex> io(g_io);
-            ok = write_slot(slot, h, payload->b);
+            ok = write_slot(slot, h, payload->b, slot == kAutoSlot);
         }
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t1).count();
         struct stat st{};
@@ -747,12 +756,12 @@ SlotInfo slot_info(int slot) {
 }
 
 void request_save(int slot) {
-    if (slot < 1 || slot > kSlots) return;
+    if (slot != kAutoSlot && (slot < 1 || slot > kSlots)) return;
     g_save_req = slot;
 }
 
 void request_load(int slot) {
-    if (slot < 1 || slot > kSlots) return;
+    if (slot != kAutoSlot && (slot < 1 || slot > kSlots)) return;
     if (g_loading.exchange(true)) return;
     std::thread([slot] {
         auto t0 = std::chrono::steady_clock::now();
@@ -780,6 +789,10 @@ std::string last_message() {
     return g_message;
 }
 
+// ---- autosave ----
+void set_autosave_seconds(int secs) { g_autosave_secs = secs < 0 ? 0 : secs; }
+int autosave_seconds() { return g_autosave_secs.load(); }
+
 void service(Cpu* c) {
     (void)c;
     static const std::vector<Timed> save_at = parse_timed("WWHD_STATE_SAVE_AT"), load_at = parse_timed("WWHD_STATE_LOAD_AT");
@@ -791,6 +804,24 @@ void service(Cpu* c) {
         for (auto& t : load_at)
             if (t.frame > last && t.frame <= f) request_load(t.slot);
         last = f;
+    }
+    // autosave: snapshot into kAutoSlot every g_autosave_secs, only while a file is actually being
+    // played (not the title / file select) and nothing else is saving or loading
+    {
+        static std::chrono::steady_clock::time_point last;
+        const int secs = g_autosave_secs.load();
+        const auto now = std::chrono::steady_clock::now();
+        if (secs <= 0) {
+            last = std::chrono::steady_clock::time_point{};
+        } else {
+            if (last == std::chrono::steady_clock::time_point{}) last = now;
+            const uint32_t addr = mods::save_addr();
+            const bool playing = addr >= 0x10000000u && mods::save_loaded(addr);
+            if (playing && !g_save_req.load() && !g_loading.load() && now - last >= std::chrono::seconds(secs)) {
+                last = now;
+                request_save(kAutoSlot);
+            }
+        }
     }
     // test aid: WWHD_STATE_DUMP=n dumps the n TV frames after each save/load (state_<save|load><slot>_<k>.png)
     static const int dump = getenv("WWHD_STATE_DUMP") ? atoi(getenv("WWHD_STATE_DUMP")) : 0;
