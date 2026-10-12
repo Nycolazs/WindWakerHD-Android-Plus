@@ -67,7 +67,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private int surfaceW, surfaceH;
 
     // the app's own language (Game › App language): 0 the system's, 1 English, 2 Portuguese (Brazil)
-    static final String[] APP_LOCALES = {"", "en", "pt-BR"};
+    static final String[] APP_LOCALES = {"", "en", "pt-BR", "es"};
 
     static Context withAppLanguage(Context base) {
         int l = base.getSharedPreferences(PREFS, MODE_PRIVATE).getInt("app_language", 0);
