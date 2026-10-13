@@ -38,8 +38,8 @@ void main() {
 const char* kWarp = R"glsl(#version 450
 layout(set=0,binding=0) uniform sampler2D comp;      // the window picture (display encoded)
 layout(set=0,binding=1) uniform sampler2D depthImg;  // the scene's depth (TV picture space)
-layout(set=0,binding=2) uniform sampler2D scanImg;   // the finished TV picture (with the HUD)
-layout(set=0,binding=3) uniform sampler2D sceneImg;  // the TV picture before the HUD
+layout(set=0,binding=2) uniform sampler2D hudMask;   // where the HUD is, a quarter of the TV picture's size (kHudMask)
+layout(set=0,binding=3) uniform sampler2D unused3;
 layout(set=0,binding=4) uniform sampler2D flowImg;   // objects' own movement per 16x16 block (kFlow)
 layout(location=0) in vec2 uv;
 layout(location=0) out vec4 result;
@@ -55,16 +55,17 @@ float viewDepth(vec2 q) {
 // camera looks at (a.x; a.y: on). The camera follows Link (and the title's boat): they and what is
 // near them keep their place on the screen while the camera moves, so moving them with the camera's
 // movement shook them back and forth every frame; the background, further away, is reprojected.
-float follows(vec2 q) {
+// (z: the view depth at q, read once per step of the motion)
+float follows(float z) {
  if (p.a.y < 0.5 || p.a.x <= 0.0) return 0.0;
- float r = abs(log(max(viewDepth(q), 1e-3) / p.a.x));
+ float r = abs(log(max(z, 1e-3) / p.a.x));
  return 1.0 - smoothstep(0.35, 0.75, r);
 }
-// where the real picture's pixel q (TV uv) is in the generated picture
-vec2 toGenCam(vec2 q);
-vec2 toGen(vec2 q) { return mix(toGenCam(q), q, follows(q)); }
-vec2 toGenCam(vec2 q) {
- vec3 P = vec3((q.x * 2.0 - 1.0) * p.t.x, (1.0 - q.y * 2.0) * p.t.y, -1.0) * viewDepth(q) - vec3(p.r0.w, p.r1.w, p.r2.w);
+// where the real picture's pixel q (TV uv), at view depth z, is in the generated picture
+vec2 toGenCam(vec2 q, float z);
+vec2 toGen(vec2 q, float z, float fw) { return mix(toGenCam(q, z), q, fw); }
+vec2 toGenCam(vec2 q, float z) {
+ vec3 P = vec3((q.x * 2.0 - 1.0) * p.t.x, (1.0 - q.y * 2.0) * p.t.y, -1.0) * z - vec3(p.r0.w, p.r1.w, p.r2.w);
  vec3 g = p.r0.xyz * P.x + p.r1.xyz * P.y + p.r2.xyz * P.z;
  if (g.z > -1e-4) return q;
  return vec2(g.x / (-g.z) / p.t.x * 0.5 + 0.5, 0.5 - g.y / (-g.z) / p.t.y * 0.5);
@@ -72,23 +73,17 @@ vec2 toGenCam(vec2 q) {
 // half the movement of the object at q beyond the camera's (TV uv), where q's depth is its block's
 // (characters and enemies: with the camera's movement alone they stood still in the in-between frame,
 // then jumped: 30 fps motion)
-vec2 objectMove(vec2 q) {
+vec2 objectMove(vec2 q, float z, float fw) {
  if (p.z.w < 0.5) return vec2(0.0);
  vec4 f = textureLod(flowImg, q, 0.0);
  if (f.w < 0.5) return vec2(0.0);
- float bz = p.z.x * exp(f.z * log(p.z.y / p.z.x)), z = viewDepth(q);
+ float bz = p.z.x * exp(f.z * log(p.z.y / p.z.x));
  if (abs(z - bz) > 0.15 * bz) return vec2(0.0);
- return (f.xy - 0.5) * (0.5 / 8.0) * (1.0 - follows(q));  // (what follows the camera already keeps its place)
+ return (f.xy - 0.5) * (0.5 / 8.0) * (1.0 - fw);  // (what follows the camera already keeps its place)
 }
-bool hudAt(vec2 q) {
- vec3 d = abs(textureLod(scanImg, q, 0.0).rgb - textureLod(sceneImg, q, 0.0).rgb);
- return max(max(d.r, d.g), d.b) > p.t.z;
-}
-// the HUD and a few pixels around it (glows, outlines and their soft edges)
-bool hud(vec2 q) {
- vec2 r = 4.0 / vec2(textureSize(scanImg, 0));
- return hudAt(q) || hudAt(q + vec2(r.x, 0.0)) || hudAt(q - vec2(r.x, 0.0)) || hudAt(q + vec2(0.0, r.y)) || hudAt(q - vec2(0.0, r.y));
-}
+// the HUD and a few pixels around it (glows, outlines and their soft edges): the mask's texels cover
+// 4x4 TV pixels, its bilinear tap anything within one texel of them
+bool hud(vec2 q) { return textureLod(hudMask, q, 0.0).r > 0.01; }
 // the window picture's pixel nearest to q, unfiltered: bilinear resampling softened fine detail (water,
 // grass, distant edges) in every other frame, which shimmered; the movement is rounded to whole pixels
 vec4 window(vec2 q) {
@@ -103,12 +98,16 @@ void main() {
  }
  vec2 q = tv;  // the source pixel that lands here: a few fixed-point steps of the motion
  vec2 raw = tv;
- for (int i = 0; i < 3; i++) { raw = tv - (toGen(q) - q) - objectMove(q); q = clamp(raw, vec2(0.0), vec2(1.0)); }
+ for (int i = 0; i < 2; i++) {
+  float z = viewDepth(q), fw = follows(z);
+  raw = tv - (toGen(q, z, fw) - q) - objectMove(q, z, fw);
+  q = clamp(raw, vec2(0.0), vec2(1.0));
+ }
  // it would come from outside the real picture (the edge while the camera turns): the real picture's
  // own pixel there (half a frame behind) rather than the edge column stretched across
  if (any(notEqual(q, raw))) q = tv;
  if (hud(q)) {  // the scene there is hidden under the HUD: the nearest visible scene along the motion
-  vec2 px = 1.0 / vec2(textureSize(scanImg, 0));
+  vec2 px = 1.0 / vec2(textureSize(depthImg, 0));
   vec2 d = q - tv;
   float l = length(d / px);
   d = l > 0.5 ? d / l : vec2(px.x, 0.0);
@@ -203,6 +202,26 @@ void main() {
  if (n >= 3.0) result = vec4(sum / (n + 1.0), c.z, 1.0);
 }
 )glsl";
+// where the HUD is (WWHD: the finished TV picture differs from the scene there), one texel per 4x4 TV
+// pixels: 1 if any of them differs by more than t.z
+const char* kHudMask = R"glsl(#version 450
+layout(set=0,binding=0) uniform sampler2D scanImg;
+layout(set=0,binding=1) uniform sampler2D sceneImg;
+layout(location=0) in vec2 uv;
+layout(location=0) out vec4 result;
+layout(push_constant) uniform P { vec4 r0; vec4 r1; vec4 r2; vec4 t; vec4 z; vec4 rect; vec4 a; } p;
+void main() {
+ ivec2 sz = textureSize(scanImg, 0), b = ivec2(uv * vec2(sz) / 4.0) * 4;
+ float m = 0.0;
+ for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) {
+  ivec2 c = min(b + ivec2(x, y), sz - 1);
+  vec3 d = abs(texelFetch(scanImg, c, 0).rgb - texelFetch(sceneImg, c, 0).rgb);
+  m = max(m, max(max(d.r, d.g), d.b));
+ }
+ result = vec4(m > p.t.z ? 1.0 : 0.0, 0.0, 0.0, 1.0);
+}
+)glsl";
+
 // the scene at quarter size (a 4x4 average from 4 bilinear taps)
 const char* kQuarter = R"glsl(#version 450
 layout(set=0,binding=0) uniform sampler2D src;
@@ -256,7 +275,7 @@ struct State {
     std::vector<std::pair<const char*, VkPipeline>> pipelines;  // the other passes, by shader
     VkSampler nearest = VK_NULL_HANDLE;
     // objects' movement: the scene at quarter size (this frame's and the one before), per-block movement
-    Target small[2], flowRaw, flow;
+    Target small[2], flowRaw, flow, hudMask;
     uint64_t smallFrame[2] = {~0ull, ~0ull};
     int smallCur = 0;
     uint64_t generated = 0, skipped = 0;
@@ -781,10 +800,23 @@ std::vector<const Image*> record(VkCommandBuffer cmd, const Image& comp, VkImage
         fi.layers = 1;
         VK_CHECK(vkCreateFramebuffer(R.device, &fi, nullptr, &S.genFb[i]));
     }
+    // the HUD mask (one pass at a quarter of the TV picture's size; the warp used to compare the two
+    // pictures at five places twice for every window pixel: about 7 ms a frame at 1.5x on an Adreno 650)
+    VkPipeline maskPipe = pipeline_for(kHudMask);
+    const uint32_t mw = std::max(1u, (R.tv.img.width + 3) / 4), mh = std::max(1u, (R.tv.img.height + 3) / 4);
+    if (!maskPipe || !ensure_target(S.hudMask, mw, mh)) {
+        out.push_back(&S.real[i]);
+        return out;
+    }
+    {
+        Input min_[2] = {{scanView, S.nearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                         {sceneView, S.nearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+        run_pass(cmd, maskPipe, S.hudMask.fb, mw, mh, min_, 2, pc);
+    }
     Input win[5] = {{compView, S.nearest, VK_IMAGE_LAYOUT_GENERAL},
                     {depthView, S.nearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-                    {scanView, S.nearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-                    {sceneView, S.nearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                    {S.hudMask.view, R.linearClamp, VK_IMAGE_LAYOUT_GENERAL},
+                    {S.hudMask.view, R.linearClamp, VK_IMAGE_LAYOUT_GENERAL},
                     {flow ? S.flow.view : sceneView, flow ? R.linearClamp : S.nearest,
                      flow ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
     run_pass(cmd, S.pipeline, S.genFb[i], S.w, S.h, win, 5, pc);
@@ -795,7 +827,7 @@ std::vector<const Image*> record(VkCommandBuffer cmd, const Image& comp, VkImage
 
 void destroy() {
     release_images();
-    for (Target* t : {&S.small[0], &S.small[1], &S.flowRaw, &S.flow}) release_target(*t);
+    for (Target* t : {&S.small[0], &S.small[1], &S.flowRaw, &S.flow, &S.hudMask}) release_target(*t);
     S.smallFrame[0] = S.smallFrame[1] = ~0ull;
     if (S.scene.image) {
         retire_image(S.scene);
