@@ -54,6 +54,31 @@ Get the latest APK from the **[Releases page](../../releases/latest)**.
 
 ## What's new in Plus
 
+### 🆕 New in v1.7: up to date with both projects, Turnip without restarts, always landscape
+- **Up to date with the Enhanced fork (1.3–1.4) and the Android port (v0.9.3)**:
+  - **Frame rates**: 120 fps on 120 Hz screens; 60 fps is now paced (frames that don't fit are
+    left out and the game keeps its speed) and replaces the adaptive mode. 60 fps (generated) stays
+    the default.
+  - **Fewer GPU hangs with Qualcomm's older drivers** (v502 on Adreno 640/650, such as the Galaxy
+    S20 FE's own): pipelines are created one at a time there.
+  - **Save states with much less memory** (compressed while they are made) and **shaders using
+    far less memory** after long sessions.
+  - **Moon jump** cheat (hold L to fly), a loading screen while the shader cache loads, optional
+    **console-accurate blur**, a **command recording thread** setting, fuller crash logs.
+  - After a GPU hang, the next start **offers another GPU driver** (or the system's).
+- **Turnip (Mesa) drivers fixed on Adreno 6xx**: above 1x resolution, Turnip **restarted the whole
+  phone** at the first frame on a Galaxy S20 FE (a fatal bus error in the chip). The app now turns
+  off UBWC compression for Turnip on Adreno 6xx by itself: 1.5x and 2x run, and 1x is as fast.
+- **A driver that failed can be chosen again**: after a crash, choosing the same driver used to
+  send the next start straight back to the system driver without trying it. A driver that crashes
+  is now named when the game starts.
+- **Always landscape**: some ROMs ignore the game's orientation, and Samsung's game tools turn
+  auto-rotate on when a game starts, so the game could show in a portrait strip. The app asks once
+  for **"Modify system settings"** and then keeps the screen in landscape while you play (the side
+  you hold the phone), giving your rotation settings back when you leave.
+- **Recommended Turnip for Adreno 650** (Galaxy S20 FE, Snapdragon 865): see
+  [Performance](#performance).
+
 ### ⚡ New in v1.6: performance and safer saves
 - **60 fps (generated)**, the new default frame rate. The game runs at its own 30 fps and every
   other frame is made on the GPU from the last one. It uses the scene's depth and the camera's
@@ -162,15 +187,15 @@ Put **one** of these in a folder on your phone (for example `Download/WindWakerH
    meanwhile; a notification shows the progress.
 4. The game starts. Have fun!
 
-> **Updating from v1.5 or older?** Those builds were signed with a different key, so Android
-> won't install v1.6 over them. **This happens one last time:**
+> **Updating from v1.6 or older?** v1.6's signing key was lost, so v1.7 is signed with a new,
+> permanent key and Android won't install it over v1.6. **Once more:**
 > 1. In the old app, open **≡ → Saves → Export saves** and pick a folder (for example `Download`).
-> 2. Uninstall the old app, then install v1.6.
+>    The automatic backup in `Download/WindWakerHD Saves` (v1.6) is already a copy too.
+> 2. Uninstall the old app, then install v1.7.
 > 3. Set up the game again. When it starts without a save, the app offers to restore one: pick the
 >    folder you exported to (or **Saves → Import saves** at any time).
 >
-> From v1.6 on, updates install over the app directly and keep everything. The automatic backup
-> in `Download/WindWakerHD Saves` is a second copy of your save.
+> From v1.7 on, updates install over the app directly and keep everything.
 
 ---
 
@@ -246,9 +271,17 @@ the camera. These are the frame rates actually shown on screen (SurfaceFlinger):
 | Dragon Roost Cavern | 58.7 | — | 30 |
 | Forbidden Woods | 55.3 (short hitches while areas load) | — | 30 |
 
-GPU drivers (60 fps generated, moving): Qualcomm v676.53 gave 60.1 fps, v615 60.0, and the
-phone's own v502 59.8. Turnip (Mesa) drivers ran at 30–37 fps on this game, so keep a Qualcomm
-driver.
+GPU drivers (v1.7, 60 fps generated, a tour through Outset, Windfall, Dragon Roost Cavern,
+Gohma's room, Forest Haven, Forbidden Woods, Tower of the Gods, Hyrule and Forsaken Fortress):
+
+| Driver | Result |
+|---|---|
+| **Turnip v26.3.0-20261013-r2** ([The412Banner/Banners-Turnip](https://github.com/The412Banner/Banners-Turnip/releases), the plain `Turnip-v26.3.0-….zip`) | **60 fps in all nine places**, Gohma's room at 26 ms of GPU time per game frame |
+| Qualcomm v502 (the phone's own) | 60 fps in all nine places; the fastest GPU time (12–14 ms per frame in Outset, against 17–22 for Turnip), so the best choice for the 60 fps mode that draws every frame |
+| Turnip 26.0 R8 (K11MCH1), Stable Turnip v2 / Mainline v32 (whitebelyash) | ~40 fps in Gohma's room and Forest Haven, 60 elsewhere |
+
+Turnip above 1x resolution is stable since v1.7, but too slow on the Adreno 650 (1.5x: about 20 fps
+in a heavy place): keep **Original (720p)** with Turnip on this GPU.
 
 Recent flagships (Snapdragon 8 Gen 2 and newer) hold 60 fps in most of the game. Phones get hot
 after a while and lower their clocks: playing while charging makes that worse.
@@ -260,7 +293,9 @@ after a while and lower their clocks: playing while charging makes that worse.
 | Problem | What to do |
 |---|---|
 | The app closes at the title screen or while playing | It turns on **GPU safe mode** by itself on the next start. If it keeps closing, set **Graphics → GPU safe mode → Maximum**. |
-| A custom GPU driver crashes | The app goes back to the system driver on the next start. |
+| A custom GPU driver crashes | The app goes back to the system driver on the next start and names the driver. Choosing it again gives it a new try. After a GPU hang it offers another driver before the game starts. |
+| The phone restarts with a Turnip driver | Update to v1.7: Turnip on Adreno 6xx above 1x resolution restarted the phone, the app now prevents it. |
+| The game shows in a portrait strip | Allow **"Modify system settings"** when the app asks (or in Android's settings for the app): it keeps the screen in landscape while you play. |
 | "The game closed unexpectedly" | The app saves a crash log. Tap **Share crash log** and attach it to an [issue](../../issues). |
 | Stutter the first time you visit a place | Shaders are being compiled; it is smooth from then on. |
 | Small artifacts at the screen edges or around moving things in 60 fps (generated) | Those are the generated frames. Choose **60 fps** if your phone is fast enough, or **30 fps**. |
@@ -281,7 +316,7 @@ ANDROID_NDK=$HOME/Android/Sdk/ndk/27.2.12479018 tools/android/build-llvm.sh
 
 cd android
 echo "sdk.dir=$HOME/Android/Sdk" > local.properties
-./gradlew assembleRelease -PwwhdDeviceRecomp -PwwhdVersionCode=12 -PwwhdVersionName=1.6
+./gradlew assembleRelease -PwwhdDeviceRecomp -PwwhdVersionCode=13 -PwwhdVersionName=1.7
 ```
 
 The APK is in `android/app/build/outputs/apk/release/`. Sign APKs you share with your own key
