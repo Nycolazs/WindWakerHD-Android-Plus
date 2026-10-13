@@ -422,6 +422,9 @@
     <string name="gpu_lost_choose_other">Another driver file…</string>
     <string name="gpu_lost_system_driver">Back to the system driver</string>
     <string name="gpu_driver_later">Later</string>
+    <string name="rotation_title">Screen rotation</string>
+    <string name="rotation_message">This phone\'s system keeps the screen in portrait and ignores that the game is landscape only, so the game shows in a strip. Allow the app to change the rotation setting and it locks the screen in landscape while you play (following the side you hold the phone), then gives your setting back when you leave the game.</string>
+    <string name="rotation_allow">Allow</string>
     <string name="gpu_driver_use">Use</string>
     <string name="gpu_driver_remove">Remove</string>
     <string name="gpu_driver_switch">Switch to %1$s? The game restarts; the first start with another driver compiles its pipelines again and takes longer.</string>

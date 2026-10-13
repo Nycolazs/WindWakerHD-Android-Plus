@@ -431,6 +431,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         return true;
     }
 
+    private RotationGuard rotationGuard;  // landscape where the system ignores the orientation
     private boolean crashOffered;  // once per process: the offer before the game starts
     private boolean gpuLostOffered;
 
@@ -1273,6 +1274,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     protected void onPause() {
         super.onPause();
         resumed = false;
+        if (rotationGuard != null) rotationGuard.onPause();
         ((android.hardware.input.InputManager) getSystemService(INPUT_SERVICE)).unregisterInputDeviceListener(deviceListener);
         updateDrcDisplay();
         if (started) Native.setPaused(true);
@@ -1287,6 +1289,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     protected void onResume() {
         super.onResume();
         resumed = true;
+        if (rotationGuard == null) rotationGuard = new RotationGuard(this, prefs);
+        rotationGuard.onResume();
         ((android.hardware.input.InputManager) getSystemService(INPUT_SERVICE)).registerInputDeviceListener(deviceListener, null);
         updateDrcDisplay();
         if (started) {

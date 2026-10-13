@@ -414,6 +414,9 @@
     <string name="gpu_lost_choose_other">Outro arquivo de driver…</string>
     <string name="gpu_lost_system_driver">Voltar ao driver do sistema</string>
     <string name="gpu_driver_later">Depois</string>
+    <string name="rotation_title">Rotação da tela</string>
+    <string name="rotation_message">O sistema deste celular mantém a tela na vertical e ignora que o jogo é só na horizontal, então o jogo aparece numa faixa. Permita que o app altere a configuração de rotação: ele trava a tela na horizontal enquanto você joga (seguindo o lado em que você segura o celular) e devolve a sua configuração quando você sai do jogo.</string>
+    <string name="rotation_allow">Permitir</string>
     <string name="opt_record_thread">Thread de gravação de comandos</string>
     <string name="opt_record_thread_hint">Uma segunda thread da CPU prepara o trabalho da GPU: mais rápido na maioria dos aparelhos, mais lento em alguns (ex.: Snapdragon 855)</string>
     <string-array name="record_thread_modes">
