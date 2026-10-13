@@ -41,6 +41,7 @@ void set_run_mode(int m);
 int swim_mode();
 void set_swim_mode(int m);
 void run_input(uint32_t buttons);  // filter_pad: the GamePad buttons of this read (L3 edges, ZR)
+void stick_input(float x, float y);  // filter_pad: the left stick of this read
 // fast forward (turbo.cpp): while ZR is held, cutscenes / dialogues run several logic steps per
 // frame
 bool ff_cutscenes();
@@ -78,10 +79,19 @@ enum Cheat {
     kCheatSongs = 8, kCheatTriforce = 16, kCheatDungeon = 32, kCheatKey = 64,
 };
 void request_cheat(int which);  // any thread
-enum Infinite { kInfHealth = 1, kInfMagic = 2, kInfAmmo = 4 };
+enum Infinite { kInfHealth = 1, kInfMagic = 2, kInfAmmo = 4, kMoonJump = 8, kMoonNoFall = 16, kMoonAllAnims = 32 };  // switches (kMoonJump: hold L)
 bool infinite(int which);
 void set_infinite(int which, bool on);
 void cheats_service();          // game main thread, frame start (interp.cpp)
+void moon_jump_step(Cpu* c, uint32_t link, bool before);  // around daPy_lk_c::execute (climb.cpp)
+// the moon jump's horizontal move for Link's `current.pos += speed` in this step (true60_link.cpp)
+bool moon_jump_move(uint32_t link, float& x, float& z);
+// rise and flight speed in percent of the tested values (25 and 40 units per step), from the menu
+void set_moon_jump_speeds(int rise, int fly);
+int moon_jump_rise();
+int moon_jump_fly();
+bool l_held();                  // the GamePad's L (shoulder) in the latest read (run_input)
+void left_stick(float& x, float& y);  // ... and its left stick (-1..1, +y up)
 
 // shared helpers (mods.cpp)
 uint64_t step();    // full logic steps so far (interp::logic_steps)

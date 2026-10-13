@@ -130,12 +130,21 @@ static void crash_handler(int sig, siginfo_t* si, void* uctx) {
     crash_log_open();
     char buf[512];
     int n;
-    if (a >= base && a < base + 0x100000000ull)
+    if (sig == SIGABRT)  // si_addr means nothing here
+        n = snprintf(buf, sizeof buf, "\nCRASH: signal %d (abort)\n", sig);
+    else if (a >= base && a < base + 0x100000000ull)
         n = snprintf(buf, sizeof buf, "\nCRASH: signal %d at guest address %08X\n", sig, (unsigned)(a - base));
     else
         n = snprintf(buf, sizeof buf, "\nCRASH: signal %d at host address %p\n", sig, si->si_addr);
     crash_write(buf, n);
     crash_log_details();
+    {
+        char pn[200];
+        int k = platform::process_numbers(pn, sizeof pn);
+        crash_write("  process: ", 11);
+        crash_write(pn, k);
+        crash_write("\n", 1);
+    }
     // the faulting instruction and the module holding it (a GPU driver, a Vulkan layer, the game code)
     uintptr_t pc = 0;
 #if defined(__aarch64__)
@@ -155,7 +164,7 @@ static void crash_handler(int sig, siginfo_t* si, void* uctx) {
             gpu_crash_marker(where);
         }
     }
-    if (!(a >= base && a < base + 0x100000000ull) && describe_host(where, sizeof where, a)) {
+    if (sig != SIGABRT && !(a >= base && a < base + 0x100000000ull) && describe_host(where, sizeof where, a)) {
         n = snprintf(buf, sizeof buf, "  fault address %p%s\n", si->si_addr, where);
         crash_write(buf, std::min<int>(n, sizeof buf - 1));
     }
@@ -235,7 +244,9 @@ static void install_crash_handler() {
     struct sigaction sa{};
     sa.sa_sigaction = crash_handler;
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
-    for (int sig : {SIGSEGV, SIGBUS, SIGILL, SIGFPE}) sigaction(sig, &sa, &g_prev_action[sig]);
+    // SIGABRT too: aborts in a GPU driver (issue #30) or fatal() get a log of their own (then the previous
+    // handler, debuggerd, as for the others)
+    for (int sig : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT}) sigaction(sig, &sa, &g_prev_action[sig]);
 }
 
 static void init_data_imports() {

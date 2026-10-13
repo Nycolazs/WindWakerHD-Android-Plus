@@ -350,6 +350,14 @@
     <string name="interp_fps">%d fps (interpolated)</string>
     <string name="cache_loading">Loading the shader cache…</string>
     <string name="cache_loading_detail">%1$,d shader variants prepared</string>
+    <string name="cheat_moon_jump">Moon jump</string>
+    <string name="cheat_moon_jump_hint">Hold L (left shoulder button) to rise, steer with the left stick</string>
+    <string name="cheat_moon_rise">Moon jump: rise speed</string>
+    <string name="cheat_moon_fly">Moon jump: flight speed</string>
+    <string name="cheat_moon_nofall">Moon jump: no fall damage</string>
+    <string name="cheat_moon_nofall_hint">Landing after a flight never hurts</string>
+    <string name="cheat_moon_anims">Moon jump: random lift-off animations</string>
+    <string name="cheat_moon_anims_hint">Each lift-off picks one of 14 poses instead of the two jump poses</string>
     <string name="opt_record_thread">Command recording thread</string>
     <string name="opt_record_thread_hint">A second CPU thread prepares the GPU work: faster on most devices, slower on some (e.g. Snapdragon 855)</string>
     <string-array name="record_thread_modes">

@@ -270,6 +270,14 @@
     <string name="cheat_inf_health">Vida infinita</string>
     <string name="cheat_inf_magic">Magia infinita</string>
     <string name="cheat_inf_ammo">Flechas e bombas infinitas</string>
+    <string name="cheat_moon_jump">Moon jump (pulo lunar)</string>
+    <string name="cheat_moon_jump_hint">Segure L (botão de ombro esquerdo) para subir, guie com o analógico esquerdo</string>
+    <string name="cheat_moon_rise">Moon jump: velocidade de subida</string>
+    <string name="cheat_moon_fly">Moon jump: velocidade de voo</string>
+    <string name="cheat_moon_nofall">Moon jump: sem dano de queda</string>
+    <string name="cheat_moon_nofall_hint">Pousar depois de um voo nunca machuca</string>
+    <string name="cheat_moon_anims">Moon jump: animações de decolagem aleatórias</string>
+    <string name="cheat_moon_anims_hint">Cada decolagem escolhe uma de 14 poses em vez das duas poses de pulo</string>
     <string name="opt_gyro_recalibrate">Recalibrar giroscópio</string>
     <string name="opt_gyro_recalibrate_hint">Segure o celular como você joga e toque: essa posição vira a frente</string>
     <string name="gyro_recalibrated">Giroscópio recalibrado</string>

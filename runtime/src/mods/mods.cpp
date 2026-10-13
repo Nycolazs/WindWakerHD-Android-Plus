@@ -55,6 +55,7 @@ std::atomic<int> g_mode[2] = {{(int)env_f("WWHD_MOD_RUN_MODE", 0)}, {(int)env_f(
 std::atomic<bool> g_on[2] = {{false}, {false}};
 std::atomic<bool> g_swimming{false};  // Link's last procedure was a swimming one
 bool g_l3_was = false;
+std::atomic<bool> g_l_held{false};  // the moon jump cheat's button (cheats.cpp)
 
 void note(const char* what, bool on) { LOG("[mods] %s %s", what, on ? "on" : "off"); }
 }  // namespace
@@ -124,9 +125,21 @@ void set_swim_mode(int m) { set_mode(1, m); }
 // L3 (left stick click) as the button of faster running and swimming, each with its own mode: held,
 // or each press switches it on and off. A press switches the one for what Link is doing: swimming
 // in the water, else running. The game itself sees L3 as usual.
+bool l_held() { return g_l_held.load(std::memory_order_relaxed); }
+std::atomic<float> g_lx{0}, g_ly{0};
+void stick_input(float x, float y) {
+    g_lx.store(x, std::memory_order_relaxed);
+    g_ly.store(y, std::memory_order_relaxed);
+}
+void left_stick(float& x, float& y) {
+    x = g_lx.load(std::memory_order_relaxed);
+    y = g_ly.load(std::memory_order_relaxed);
+}
+
 void run_input(uint32_t buttons) {
     g_zr.store((buttons & input::kZR) != 0, std::memory_order_relaxed);  // fast forward (turbo.cpp)
     bool l3 = (buttons & input::kStickL) != 0;
+    g_l_held.store((buttons & input::kL) != 0, std::memory_order_relaxed);
     for (int w = 0; w < 2; w++)
         if (g_mode[w].load(std::memory_order_relaxed) == 1) g_on[w] = l3;
     int w = g_swimming.load(std::memory_order_relaxed) ? 1 : 0;

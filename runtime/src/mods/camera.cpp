@@ -184,6 +184,7 @@ void mouse_button(int button, bool down) {
 // end of input::read(): synthetic right stick for the mouse, R3 pulses for the wheel, left click
 void filter_pad(input::PadState& s) {
     run_input(s.buttons);  // faster running's L3 (mods.cpp)
+    stick_input(s.lx, s.ly);  // the moon jump's steering (cheats.cpp)
     inject_test_mouse();
     test_goto(s);
     uint64_t now = step();

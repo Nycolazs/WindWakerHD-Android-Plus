@@ -786,6 +786,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         for (int p = 0; p < HUD_PARTS; p++) sendHud(p);
         for (String k : new String[] {"inf_health", "inf_magic", "inf_ammo"}) Native.setOption(k, prefs.getBoolean(k, false) ? 1 : 0);
         for (String m : MODS) Native.setOption(m, prefs.getBoolean(m, false) ? 1 : 0);
+        for (String c : new String[] {"cheat_moon_jump", "cheat_moon_nofall", "cheat_moon_anims"}) Native.setOption(c, prefs.getBoolean(c, false) ? 1 : 0);
+        Native.setOption("cheat_moon_rise", prefs.getInt("cheat_moon_rise", 100));
+        Native.setOption("cheat_moon_fly", prefs.getInt("cheat_moon_fly", 100));
         Native.setOption("mod_camera_speed", prefs.getInt("mod_camera_speed", 100));
         Native.setOption("mod_run_speed", prefs.getInt("mod_run_speed", 100));
         Native.setOption("mod_swim_speed", prefs.getInt("mod_swim_speed", 100));
@@ -1389,6 +1392,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                                    "mod_ff_cutscenes", "mod_ff_dialogues"};
     static final int[] CAMERA_SPEEDS = {50, 100, 150, 200};
     static final int[] RUN_SPEEDS = {100, 125, 150, 200, 250, 300, 400};  // 100: off
+    static final int[] MOON_RISE_SPEEDS = {50, 75, 100, 150, 200, 300};  // moon jump rise, percent
+    static final int[] MOON_FLY_SPEEDS = new int[20];  // moon jump flight, percent: 50..1000 in steps of 50
+    static { for (int i = 0; i < MOON_FLY_SPEEDS.length; i++) MOON_FLY_SPEEDS[i] = 50 * (i + 1); }
 
     // faster running ("mod_run") and swimming ("mod_swim") each apply always, or with L3: held, or
     // one press switches it on and off

@@ -374,6 +374,11 @@ static void cam_trace(uint32_t cam, const char* what) {
         interp::pass_t(), what, s.eye[0], s.eye[1], s.eye[2], s.center[0], s.center[1], s.center[2]);
 }
 
+namespace interp {
+std::atomic<uint32_t> g_last_camera{0};
+uint32_t last_camera() { return g_last_camera.load(std::memory_order_relaxed); }
+}  // namespace interp
+
 static void camera_draw(Cpu* c);
 // camera_draw(camera_process_class*). Pinch zoom (mods::camera_zoom, touch): the eye moves along
 // its line to the target for the draw only and is put back after, so the game's camera logic,
@@ -430,6 +435,7 @@ namespace gfx::rp { bool enabled(); }         // vk/reproj.cpp
 static void camera_draw(Cpu* c) {
     using namespace interp;
     uint32_t cam = c->r[3];
+    g_last_camera.store(cam, std::memory_order_relaxed);
 #ifdef __ANDROID__
     // 60 fps (generated): the camera this frame is drawn with (eye, center, up, fovy, near, far)
     if (gfx::rp::enabled()) {
@@ -1087,9 +1093,15 @@ extern "C" void hook_0203593C(Cpu* c) {
     fx_pass_start();
     ss::service(c);  // save states: exact values are back in guest memory, all other threads idle
     mods::cheats_service();
-    // debug: WWHD_CRASH_TEST=n crashes the game thread after n steps (to check the crash log)
-    static long crashTest = getenv("WWHD_CRASH_TEST") ? atol(getenv("WWHD_CRASH_TEST")) : 0;
-    if (crashTest > 0 && --crashTest == 0) raise(SIGSEGV);
+    // debug: WWHD_CRASH_TEST=n crashes the game thread after n steps (to check the crash log; "a<n>":
+    // abort() instead, as a GPU driver does)
+    static const char* crashEnv = getenv("WWHD_CRASH_TEST");
+    static const bool crashAbort = crashEnv && crashEnv[0] == 'a';
+    static long crashTest = crashEnv ? atol(crashEnv + (crashAbort ? 1 : 0)) : 0;
+    if (crashTest > 0 && --crashTest == 0) {
+        if (crashAbort) abort();
+        raise(SIGSEGV);
+    }
     g_passes++;
     menu30_update();
     // test aid: WWHD_INTERP_AT_STEP=n switches interpolation on after n frames

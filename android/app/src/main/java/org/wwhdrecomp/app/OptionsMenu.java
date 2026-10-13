@@ -565,11 +565,38 @@ final class OptionsMenu extends Dialog {
                 a.info(a.getString(R.string.cheat_done));
             });
         }
-        String[] keys = {"inf_health", "inf_magic", "inf_ammo"};
-        int[] names = {R.string.cheat_inf_health, R.string.cheat_inf_magic, R.string.cheat_inf_ammo};
+        String[] keys = {"inf_health", "inf_magic", "inf_ammo", "cheat_moon_jump"};
+        int[] names = {R.string.cheat_inf_health, R.string.cheat_inf_magic, R.string.cheat_inf_ammo, R.string.cheat_moon_jump};
+        int[] hints = {0, 0, 0, R.string.cheat_moon_jump_hint};
         for (int i = 0; i < keys.length; i++) {
             final String k = keys[i];
-            toggle(names[i], 0, a.prefs.getBoolean(k, false), on -> {
+            toggle(names[i], hints[i], a.prefs.getBoolean(k, false), on -> {
+                a.prefs.edit().putBoolean(k, on).apply();
+                Native.setOption(k, on ? 1 : 0);
+            });
+        }
+        // the moon jump's rise and flight speed, in percent of the tested values (from the Android port)
+        String[] moonKey = {"cheat_moon_rise", "cheat_moon_fly"};
+        int[] moonLabel = {R.string.cheat_moon_rise, R.string.cheat_moon_fly};
+        int[][] moonSpeeds = {MainActivity.MOON_RISE_SPEEDS, MainActivity.MOON_FLY_SPEEDS};
+        for (int i = 0; i < moonKey.length; i++) {
+            String key = moonKey[i];
+            int[] speeds = moonSpeeds[i];
+            String[] pct = new String[speeds.length];
+            for (int j = 0; j < pct.length; j++) pct[j] = speeds[j] + "%";
+            int cur = java.util.Arrays.binarySearch(speeds, a.prefs.getInt(key, 100));
+            if (cur < 0) cur = java.util.Arrays.binarySearch(speeds, 100);
+            choice(moonLabel[i], 0, pct, cur, k -> {
+                a.prefs.edit().putInt(key, speeds[k]).apply();
+                Native.setOption(key, speeds[k]);
+            });
+        }
+        String[] moonSwitch = {"cheat_moon_nofall", "cheat_moon_anims"};
+        int[][] moonSwitchText = {{R.string.cheat_moon_nofall, R.string.cheat_moon_nofall_hint},
+                                  {R.string.cheat_moon_anims, R.string.cheat_moon_anims_hint}};
+        for (int i = 0; i < moonSwitch.length; i++) {
+            final String k = moonSwitch[i];
+            toggle(moonSwitchText[i][0], moonSwitchText[i][1], a.prefs.getBoolean(k, false), on -> {
                 a.prefs.edit().putBoolean(k, on).apply();
                 Native.setOption(k, on ? 1 : 0);
             });

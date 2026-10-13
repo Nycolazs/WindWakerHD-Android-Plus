@@ -4,6 +4,8 @@
 #include <cstdint>
 
 namespace interp {
+// the camera drawn last (camera_process_class; eye at +0xDC, center at +0xE8), 0 before the first
+uint32_t last_camera();
 void record_executed_step(); // game thread; includes built-in turbo passes
 uint64_t executed_steps();    // actual actor logic passes, including true60 half steps
 int mode();                 // 0 off (30 fps), 1 frame interpolation (at fps()), 2 true 60

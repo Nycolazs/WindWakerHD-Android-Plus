@@ -2674,6 +2674,26 @@ void swap() {
     }
     // keep the driver's compiled pipelines across launches (the app can be killed at any time)
     static size_t savedPipelines = 0;
+    if (R.frame % 1800 == 0) {  // once a minute at 30 fps: the trend shows in the log a crash log carries
+        char pn[200];
+        platform::process_numbers(pn, sizeof pn);
+        LOG("[proc] %s", pn);
+        // the renderer's images (textures, render targets): they're kept for the whole session
+        size_t n = 0, bytes = 0, targets = 0;
+        for (auto& [addr, surf] : R.surfaces) {
+            n++;
+            if (surf->gpuWritten) targets++;
+            if (surf->img.alloc) {
+                VmaAllocationInfo ai{};
+                vmaGetAllocationInfo(R.vma, surf->img.alloc, &ai);
+                bytes += ai.size;
+            }
+        }
+        VmaTotalStatistics vs{};
+        vmaCalculateStatistics(R.vma, &vs);
+        LOG("[gfx] memory: %zu surfaces (%zu rendered to), %.0f MB in their images; all Vulkan memory %.0f MB in %u blocks",
+            n, targets, bytes / 1048576.0, vs.total.statistics.blockBytes / 1048576.0, vs.total.statistics.blockCount);
+    }
     if (R.frame % 1800 == 0 && pipelines_created() != savedPipelines) {
         savedPipelines = pipelines_created();
         save_caches();

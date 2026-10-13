@@ -544,6 +544,11 @@ JNI_FN(void, setOption)(JNIEnv* env, jclass, jstring name, jint value) {
     else if (n == "mod_run_mode") mods::set_run_mode(value);
     else if (n == "mod_swim_mode") mods::set_swim_mode(value);
     else if (n == "mod_swim_speed") mods::set_swim_speed(value / 100.0f);
+    else if (n == "cheat_moon_jump") mods::set_infinite(mods::kMoonJump, value != 0);
+    else if (n == "cheat_moon_nofall") mods::set_infinite(mods::kMoonNoFall, value != 0);
+    else if (n == "cheat_moon_anims") mods::set_infinite(mods::kMoonAllAnims, value != 0);
+    else if (n == "cheat_moon_rise") mods::set_moon_jump_speeds(value, mods::moon_jump_fly());
+    else if (n == "cheat_moon_fly") mods::set_moon_jump_speeds(mods::moon_jump_rise(), value);
 }
 
 JNI_FN(jint, getOption)(JNIEnv* env, jclass, jstring name) {
@@ -573,6 +578,11 @@ JNI_FN(jint, getOption)(JNIEnv* env, jclass, jstring name) {
     if (n == "mod_run_mode") return mods::run_mode();
     if (n == "mod_swim_mode") return mods::swim_mode();
     if (n == "mod_swim_speed") return (int)lroundf(mods::swim_speed() * 100);
+    if (n == "cheat_moon_jump") return mods::infinite(mods::kMoonJump);
+    if (n == "cheat_moon_nofall") return mods::infinite(mods::kMoonNoFall);
+    if (n == "cheat_moon_anims") return mods::infinite(mods::kMoonAllAnims);
+    if (n == "cheat_moon_rise") return mods::moon_jump_rise();
+    if (n == "cheat_moon_fly") return mods::moon_jump_fly();
     return 0;
 }
 

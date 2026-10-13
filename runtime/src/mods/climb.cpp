@@ -29,6 +29,7 @@
 // - True 60 (key 7): the climbing procedures (0x3D-0x40) are not in true60's 60 Hz list, so they
 //   stay at 30 Hz; stamina is counted per original step (true60::dt()).
 #include "mods/climb.h"
+#include "mods/mods.h"
 
 #include <algorithm>
 #include <atomic>
@@ -248,7 +249,9 @@ extern "C" void hook_02429408(Cpu* c) {
 // ---- daPy_lk_c::execute (0240CDD0): stamina, re-grab block, HUD state ----
 extern "C" void hook_0240CDD0(Cpu* c) {
     uint32_t self = c->r[3];
+    mods::moon_jump_step(c, self, true);  // the moon jump cheat (cheats.cpp)
     f_0240CDD0_orig(c);
+    mods::moon_jump_step(c, self, false);
     if (!g_on) {
         g_stamina = 1.0f;
         g_alpha = 0.0f;

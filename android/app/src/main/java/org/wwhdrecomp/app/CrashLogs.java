@@ -109,11 +109,15 @@ final class CrashLogs {
             }
             if (newest > seen) prefs.edit().putLong("exit_seen_ms", newest).apply();
             if (e == null || !unexpected(e) || restarted(e, exits)) return;
-            // our crash handler wrote a log for this one already
+            // our crash handler wrote a log for this one already: the run's log lines go into it (the
+            // handler can't read them; they show e.g. the GPU driver's own messages before an abort)
             File[] own = dir(a).listFiles((d, n) -> isLogName(n));
             if (own != null)
                 for (File f : own)
-                    if (Math.abs(f.lastModified() - e.getTimestamp()) < 120_000) return;
+                    if (Math.abs(f.lastModified() - e.getTimestamp()) < 120_000) {
+                        appendRunLog(f, e);
+                        return;
+                    }
             writeExitLog(a, prefs, e);
         } catch (RuntimeException ignored) {
             // no exit record (some vendors): nothing to report
@@ -158,6 +162,14 @@ final class CrashLogs {
     private static final String[] REASONS = {"unknown", "exit (self)", "signaled", "low memory", "crash (Java)", "crash (native)", "not responding (ANR)",
             "initialization failure", "permission change", "excessive resource use", "user requested", "user stopped", "dependency died", "other",
             "freezer", "package state change", "package updated"};
+
+    private static void appendRunLog(File f, android.app.ApplicationExitInfo e) {
+        String s = "\n  [log of the run]\n" + logcat("--pid=" + e.getPid(), 1500) + "  [crash buffer]\n" + logcat("-b crash", 200);
+        try (java.io.FileOutputStream out = new java.io.FileOutputStream(f, true)) {
+            out.write(s.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (java.io.IOException ignored) {
+        }
+    }
 
     private static void writeExitLog(Activity a, SharedPreferences prefs, android.app.ApplicationExitInfo e) {
         StringBuilder s = new StringBuilder();

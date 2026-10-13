@@ -340,7 +340,10 @@ enum CompileState { CS_PENDING, CS_READY, CS_FAILED, CS_DEFERRED };  // deferred
 // feeds and vice versa), so one program has many keys but few distinct translations.
 struct Module {
     VkShaderModule module = VK_NULL_HANDLE;   // valid once state == CS_READY
-    std::atomic<int> state{CS_PENDING};
+    std::atomic<int> state{CS_PENDING};       // CS_DEFERRED: from the cache replay, compiled later (start_module)
+    std::string pending;                      // ... with its source (the only copy kept)
+    uint64_t hash = 0, key = 0;
+    bool vertex = false;
 };
 
 struct Shader {
@@ -464,8 +467,29 @@ static void compile_now(Module* m, uint64_t hash, uint64_t key, bool vertex, con
     compile_done();
 }
 
-// attach the shader to the module for its translation, compiling that module if it is new
-static void compile_shader(Shader* sh) {
+// The translation's source is only needed until the shader has its module (hash, module lookup, the
+// compile's own copy): freed then. The cache replay translates tens of thousands of variants sharing
+// ~1000 modules, and each kept its tens of KB of GLSL: about 2 GB of native heap on a Mi 9, which
+// Android ended for low memory (in Dragon Roost, and after save state loads).
+static void free_source(Shader* sh) {
+    delete sh->dec->strBuf_shaderSource;
+    sh->dec->strBuf_shaderSource = nullptr;
+}
+
+static std::vector<Module*> g_deferred_modules;  // the cache replay's new modules, compiled later
+static void compile_module(Module* m, uint64_t hash, uint64_t key, bool vertex, std::string src);
+
+// a deferred module's compile, now (first use, or gradually in the background)
+static void start_module(Module* m) {
+    if (m->state != CS_DEFERRED) return;
+    m->state = CS_PENDING;
+    compile_module(m, m->hash, m->key, m->vertex, std::move(m->pending));
+    m->pending = std::string();
+}
+
+// attach the shader to the module for its translation, compiling that module if it is new; with
+// defer (the cache replay) a new module is only created, keeping the source, and compiled later
+static void compile_shader(Shader* sh, bool defer = false) {
     std::string src = sh->dec->strBuf_shaderSource->c_str();
     // Depth-only and shaded variants of the same geometry must rasterize identical positions:
     // later passes depth-test EQUAL/LEQUAL against the first, and without invariance the driver
@@ -508,22 +532,35 @@ static void compile_shader(Shader* sh) {
     }
     uint64_t hash = hash_bytes(src.data(), src.size(), sh->vertex ? 0x5653ull : 0x5053ull) ^ src.size();
     auto it = g_modules.find(hash);
+    free_source(sh);
     if (it != g_modules.end()) {
         sh->mod = it->second;
         g_module_cache_hits++;
+        if (!defer) start_module(sh->mod);
         return;
     }
     auto* m = new Module();
     g_modules[hash] = m;
     sh->mod = m;
-    uint64_t key = sh->key;
-    bool vertex = sh->vertex;
+    if (defer) {
+        m->state = CS_DEFERRED;
+        m->pending = std::move(src);
+        m->hash = hash;
+        m->key = sh->key;
+        m->vertex = sh->vertex;
+        g_deferred_modules.push_back(m);
+        return;
+    }
+    compile_module(m, hash, sh->key, sh->vertex, std::move(src));
+}
+
+static void compile_module(Module* m, uint64_t hash, uint64_t key, bool vertex, std::string src) {
     if (g_sync_shaders) {
         compile_now(m, hash, key, vertex, src);
         return;
     }
     g_compiles_in_flight++;
-    g_workers.push([m, hash, key, vertex, src] {
+    g_workers.push([m, hash, key, vertex, src = std::move(src)] {
         compile_now(m, hash, key, vertex, src);
         g_compiles_in_flight--;
     });
@@ -737,12 +774,9 @@ static Shader* get_shader(const uint32_t* regs, bool vertex, LatteFetchShader* f
 
 static void cache_record_shader(const uint32_t* regs, bool vertex);
 static bool g_defer_compiles = false;
-static std::vector<Shader*> g_deferred_shaders;
 
 static void compile_deferred(Shader* s) {
-    if (s->state != CS_DEFERRED) return;
-    s->state = CS_PENDING;
-    compile_shader(s);
+    if (s && s->mod) start_module(s->mod);
 }
 
 static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetchShader* fs, uint64_t fsKey,
@@ -823,12 +857,8 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
         snprintf(name, sizeof name, "/%s_%08X_%016llx.glsl", vertex ? "vs" : "ps", addr, (unsigned long long)key);
         if (FILE* f = fopen((dir + name).c_str(), "w")) { fputs(s->dec->strBuf_shaderSource->c_str(), f); fclose(f); }
     }
-    if (g_defer_compiles) {
-        s->state = CS_DEFERRED;  // cache replay: compile on first use or gradually in the background
-        g_deferred_shaders.push_back(s);
-    } else {
-        compile_shader(s);
-    }
+    // cache replay: new modules are compiled on first use or gradually in the background
+    compile_shader(s, g_defer_compiles);
     static uint32_t count = 0;
     if (++count % 100 == 0) LOG("[gfx] %u shaders translated", count);
     return s;
@@ -2305,10 +2335,10 @@ void cache_warm_step() {
     // a few background compiles per frame keep the startup burst from starving the game, and none
     // start while the game's own compiles keep the compiler busy (WWHD_BG_COMPILES, default 4 in flight)
     static const int maxInFlight = getenv("WWHD_BG_COMPILES") ? atoi(getenv("WWHD_BG_COMPILES")) : 4;
-    for (int n = 0; n < 8 && !g_deferred_shaders.empty() && g_compiles_in_flight < maxInFlight;) {
-        Shader* s = g_deferred_shaders.back();
-        g_deferred_shaders.pop_back();
-        if (s->state == CS_DEFERRED) { compile_deferred(s); n++; }
+    for (int n = 0; n < 8 && !g_deferred_modules.empty() && g_compiles_in_flight < maxInFlight;) {
+        Module* m = g_deferred_modules.back();
+        g_deferred_modules.pop_back();
+        if (m->state == CS_DEFERRED) { start_module(m); n++; }
     }
     static bool queued = false;
     if (!g_pending_pipelines.empty()) queued = true;

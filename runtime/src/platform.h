@@ -43,6 +43,11 @@ bool map_fixed(void* addr, size_t size);
 // write a line to the platform log (stderr; Android: logcat as well)
 void log_line(const char* line);
 
+// the process's memory mappings (and the system's limit), threads and memory, as one line into buf;
+// async-signal-safe (reads /proc with plain syscalls). Issue #30: a GPU driver failed to mprotect a
+// new thread's stack with "out of memory", which may be the mapping limit rather than RAM.
+int process_numbers(char* buf, int size);
+
 // print a host backtrace of the calling thread to stderr (async-signal-safe enough for the crash handler)
 void print_backtrace(int fd = -1);  // also into fd (a crash log) when >= 0
 

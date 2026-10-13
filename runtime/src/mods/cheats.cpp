@@ -10,8 +10,13 @@
 // Note: the game itself takes the sword away in Forsaken Fortress (first visit) and the bow in the
 // Tower of the Gods when those stages load (d_s_play.cpp), cheat or not.
 //
+// Moon jump (a switch like the infinite ones, our own: the GameCube Gecko/Action Replay codes don't
+// apply to WWHD): while L is held Link rises and the left stick steers him; on release gravity takes
+// over again (moon_jump_step). WWHD_MOON_JUMP_SPEED / _LIFT / _FLY override rise, lift-off and flight
+// speed.
+//
 // Test switch: WWHD_CHEAT=items,sword,stats,songs,triforce,dungeon,key applies those once a save
-// file is loaded; WWHD_CHEAT_INFINITE=health,magic,ammo switches those on.
+// file is loaded; WWHD_CHEAT_INFINITE=health,magic,ammo,moonjump switches those on.
 // WWHD_CHEAT_SAVE_ADDR=hex overrides the address (another game version).
 // Test switch: WWHD_TEST_WARP=stage:room:point,stage:room:point,... once a file is loaded, goes to
 // each place in turn, one every WWHD_TEST_WARP_SECS seconds (default 25), as
@@ -19,7 +24,10 @@
 // places without playing up to them (performance, rendering).
 // WWHD_TEST_LOAD_STATE=slot loads that save state 8 s after the start, and
 // WWHD_TEST_SAVE_STATE=slot saves one once the warps are done (the last place).
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
@@ -28,6 +36,8 @@
 #include <vector>
 
 #include "mods.h"
+#include "interp.h"
+#include "true60.h"
 #include "release.h"
 #include "runtime.h"
 #include "savestate.h"
@@ -141,7 +151,9 @@ int parse_env(const char* var, std::initializer_list<std::pair<const char*, int>
 std::atomic<int> g_pending{parse_env("WWHD_CHEAT", {{"items", kCheatItems}, {"sword", kCheatSword}, {"stats", kCheatStats},
                                                     {"songs", kCheatSongs}, {"triforce", kCheatTriforce},
                                                     {"dungeon", kCheatDungeon}, {"key", kCheatKey}})};
-std::atomic<int> g_infinite{parse_env("WWHD_CHEAT_INFINITE", {{"health", kInfHealth}, {"magic", kInfMagic}, {"ammo", kInfAmmo}})};
+std::atomic<int> g_infinite{parse_env("WWHD_CHEAT_INFINITE",
+                                      {{"health", kInfHealth}, {"magic", kInfMagic}, {"ammo", kInfAmmo}, {"moonjump", kMoonJump}, {"nofall", kMoonNoFall},
+                                       {"allanims", kMoonAllAnims}})};
 }  // namespace
 
 void request_cheat(int which) { g_pending |= which; }
@@ -149,7 +161,186 @@ bool infinite(int which) { return g_infinite.load(std::memory_order_relaxed) & w
 void set_infinite(int which, bool on) {
     if (on) g_infinite |= which;
     else g_infinite &= ~which;
-    LOG("[cheats] infinite %s %s", which == kInfHealth ? "health" : which == kInfMagic ? "magic" : "ammo", on ? "on" : "off");
+    LOG("[cheats] %s %s",
+        which == kInfHealth  ? "infinite health"
+        : which == kInfMagic ? "infinite magic"
+        : which == kInfAmmo  ? "infinite ammo"
+        : which == kMoonJump ? "moon jump"
+        : which == kMoonNoFall ? "no fall damage after flying"
+                             : "random lift-off animations",
+        on ? "on" : "off");
+}
+
+// Moon jump. fopAc_ac_c fields (WWHD: base fields +0x11C; docs/decomp-notes.md): current.angle at
+// +0x320, shape_angle +0x328, speed +0x33C; daPy_lk_c::mModeFlg +0x6A70 (bit 2: in the air), mCurProc
+// +0x65F0. Speeds per 30 Hz step, like the game's. While L (the shoulder button) is held:
+//  - he's put into the game's fall, procFall_init (proc 0x27), also from swimming: on the ground his procedures ignore
+//    speed.y and the ground snapping undoes a lift; the jump off a ledge (proc 0x24) moves him along
+//    its own take-off line. His collision's ground flags are cleared too, or the fall lands at once;
+//  - speed.y is set upward every step.
+// Until he lands, also after L is let go, the left stick steers as when he runs: he turns towards the
+// stick's direction relative to the camera at a limited rate, and the horizontal part of his
+// `current.pos += speed` (true60_link.cpp, moon_jump_move) is the way he faces; stick released: no
+// horizontal move. His angles are written before and after his step. The
+// fall itself sets his speed and direction every step and pins his position, so neither speed fields
+// nor a position written from outside steer him. The collision after the move still applies (walls).
+// No fall damage after flying (a switch): his fall start height (+0x6A48: posMove stores the height at
+// the top of a jump, 023FD38C; landing compares it with his height for the hard landing, 0241C8B8) is
+// kept at his height before and after every step of the flight, until he lands.
+constexpr uint32_t kAngleY = 0x320 + 2, kShapeAngleY = 0x328 + 2;
+constexpr uint32_t kCurProc = 0x65F0, kProcFall = 0x27;  // daPy_lk_c::mCurProc, daPy_PROC_FALL
+constexpr uint32_t kSpeedY = 0x33C + 4, kPosY = 0x314 + 4, kFallStartY = 0x6A48;
+uint32_t g_move_link = 0;        // the step being steered (moon_jump_move), and its move
+float g_move_x = 0, g_move_z = 0;
+bool g_flight = false;           // a moon jump began and Link hasn't landed yet: the stick steers
+int16_t g_face = 0;              // the way he faces and flies (the fall resets his angles every step)
+bool g_face_set = false;
+float env_float(const char* name, float def) {
+    const char* e = getenv(name);
+    return e ? (float)atof(e) : def;
+}
+std::atomic<int> g_rise_pct{100}, g_fly_pct{100};  // the menu's speeds (set_moon_jump_speeds)
+float rise_speed() {
+    static const float base = env_float("WWHD_MOON_JUMP_SPEED", 25.0f);
+    return base * g_rise_pct.load(std::memory_order_relaxed) / 100.0f;
+}
+float fly_speed() {
+    static const float base = env_float("WWHD_MOON_JUMP_FLY", 40.0f);
+    return base * g_fly_pct.load(std::memory_order_relaxed) / 100.0f;
+}
+void face(uint32_t link) {
+    st16(link + kAngleY, (uint16_t)g_face);
+    st16(link + kShapeAngleY, (uint16_t)g_face);
+}
+constexpr uint32_t kModeFlg = 0x6A70, kModeMidair = 0x2, kModeSwim = 0x40000;
+// daPy_lk_c::mAcch (dBgS_Acch) at +0x80C: its m_flags (+0x28) with GROUND_HIT 0x20, GROUND_FIND 0x40,
+// GROUND_LANDING 0x80 (autoGroundHit, 023FE2F0, tests 0x20 there). Left set, the fall lands at once.
+constexpr uint32_t kAcchFlags = 0x80C + 0x28, kAcchGround = 0x20 | 0x40 | 0x80;
+const release::Code kFallInit{0x023F6564};
+// daPy_lk_c::setSingleMoveAnime(anm r4, f32 rate f1, f32 start f2, s16 end r5, f32 morf f3)
+const release::Code kSetAnime{0x023E0A04};
+// the pose at each lift-off (each new L press), chosen at random: the two the user liked best (the
+// game's animations for the jump off a ledge and its neighbour), or with the switch "random lift-off
+// animations" any of the ones tried (from the airborne procedures and the Deku leaf ones)
+const int kLiftAnims[] = {0x3C, 0x3D};
+const int kAllLiftAnims[] = {0x0D, 0x3C, 0x3D, 0x3E, 0x30, 0xD3, 0x4C, 0x55, 0x56, 0x57, 0x5D, 0x5E, 0x5F, 0x60};
+bool g_l_was = false;
+uint32_t g_rand = 0x9E3779B9u;
+int random_below(int n) {  // xorshift seeded by the clock; any spread will do for a pose
+    static bool seeded = false;
+    if (!seeded) {
+        seeded = true;
+        g_rand ^= (uint32_t)std::chrono::steady_clock::now().time_since_epoch().count() | 1u;
+    }
+    g_rand ^= g_rand << 13;
+    g_rand ^= g_rand >> 17;
+    g_rand ^= g_rand << 5;
+    return (int)(g_rand % (uint32_t)n);
+}  // daPy_lk_c::procFall_init(int, f32) (calls commonProcInit(0x27))
+// the stick's horizontal move for this step (moon_jump_move uses it), as when he runs: the stick's
+// direction relative to the camera, Link turns towards it at a limited rate and flies the way he faces
+void moon_jump_steer(uint32_t link) {
+    const float fly = fly_speed();
+    static const int turn = (int)env_float("WWHD_MOON_JUMP_TURN", 3000.0f);  // per 30 Hz step (0x8000 = 180 degrees)
+    if (!g_face_set) {
+        g_face = (int16_t)ld16(link + kShapeAngleY);
+        g_face_set = true;
+    }
+    float sx, sy;
+    left_stick(sx, sy);
+    const float mag = std::min(1.0f, std::sqrt(sx * sx + sy * sy));
+    float vx = 0, vz = 0;
+    uint32_t cam = interp::last_camera();
+    if (mag >= 0.15f && cam) {
+        // camera forward on the ground plane (center - eye); right = forward x up = (-fz, fx)
+        float fx = (float)(ldf32(cam + 0xE8) - ldf32(cam + 0xDC)), fz = (float)(ldf32(cam + 0xF0) - ldf32(cam + 0xE4));
+        const float fl = std::sqrt(fx * fx + fz * fz);
+        if (fl > 1e-3f) {
+            fx /= fl;
+            fz /= fl;
+            const float wx = fx * sy - fz * sx, wz = fz * sy + fx * sx;
+            const int16_t target = (int16_t)std::lround(std::atan2(wx, wz) * (32768.0 / 3.14159265358979));
+            const int step = std::max(1, (int)std::lround(turn * true60::dt()));
+            const int16_t diff = (int16_t)(target - g_face);
+            g_face = (int16_t)(g_face + std::clamp<int>(diff, -step, step));
+            const float a = g_face * (3.14159265358979f / 32768.0f);
+            vx = std::sin(a) * fly * mag;
+            vz = std::cos(a) * fly * mag;
+        }
+    }
+    face(link);
+    g_move_link = link;
+    g_move_x = vx;
+    g_move_z = vz;
+}
+
+void moon_jump_step(Cpu* c, uint32_t link, bool before) {
+    if (before) g_move_link = 0;
+    if (!link || !(g_infinite.load(std::memory_order_relaxed) & kMoonJump)) {
+        g_flight = g_face_set = false;
+        return;
+    }
+    if (g_flight && (g_infinite.load(std::memory_order_relaxed) & kMoonNoFall))
+        st32(link + kFallStartY, ld32(link + kPosY));  // no fall height: no hard landing
+    const uint32_t mode = ld32(link + kModeFlg);
+    if (!l_held()) {
+        if (before) g_l_was = false;
+        // let go: gravity takes over, the stick still steers until he lands (or swims)
+        if (g_flight && (!(mode & kModeMidair) || (mode & kModeSwim))) g_flight = g_face_set = false;
+        if (g_flight) {
+            if (before) moon_jump_steer(link);
+            else if (g_face_set) face(link);
+        }
+        return;
+    }
+    const float rise = rise_speed();
+    if (before) {
+        // into the game's fall: from the ground, from swimming, and from the jump off a ledge (it
+        // keeps its own take-off line)
+        const bool press = !g_l_was;
+        if (ld32(link + kCurProc) != kProcFall) {
+            const Cpu saved = *c;
+            c->f[1].ps0 = c->f[1].ps1 = 5.0;  // animation blend
+            guest_call(c, kFallInit, {link, 0});
+            *c = saved;
+        }
+        if (press) {
+            const bool all = g_infinite.load(std::memory_order_relaxed) & kMoonAllAnims;
+            const int anm = all ? kAllLiftAnims[random_below((int)(sizeof kAllLiftAnims / sizeof kAllLiftAnims[0]))]
+                                : kLiftAnims[random_below((int)(sizeof kLiftAnims / sizeof kLiftAnims[0]))];
+            const Cpu saved = *c;
+            c->f[1].ps0 = c->f[1].ps1 = 1.0;  // rate
+            c->f[2].ps0 = c->f[2].ps1 = 0.0;  // start
+            c->f[3].ps0 = c->f[3].ps1 = 5.0;  // blend
+            guest_call(c, kSetAnime, {link, (uint32_t)anm, 0xFFFFFFFFu});
+            *c = saved;
+        }
+        st32(link + kAcchFlags, ld32(link + kAcchFlags) & ~kAcchGround);  // not standing: the rise carries him off
+        g_flight = true;
+    }
+    stf32(link + kSpeedY, rise);
+    if (before) g_l_was = true;
+    if (!g_flight) return;
+    if (before) moon_jump_steer(link);
+    else if (g_face_set) face(link);
+}
+
+void set_moon_jump_speeds(int rise, int fly) {
+    g_rise_pct = std::clamp(rise, 10, 1000);
+    g_fly_pct = std::clamp(fly, 10, 1000);
+    LOG("[cheats] moon jump speeds: rise %d%%, flight %d%%", g_rise_pct.load(), g_fly_pct.load());
+}
+int moon_jump_rise() { return g_rise_pct.load(); }
+int moon_jump_fly() { return g_fly_pct.load(); }
+
+bool moon_jump_move(uint32_t link, float& x, float& z) {
+    if (!link || link != g_move_link) return false;
+    x = g_move_x;
+    z = g_move_z;
+    // his facing once more: the fall resets the angles in its procedure (before this move), and the
+    // model matrix is built after it (setWorldMatrix, end of his step), so he's drawn turned
+    if (g_face_set) face(link);
+    return true;
 }
 
 // dComIfG_play_c::mNextStage (dStage_nextStage_c): name[8], point s16, room s8, layer s8, enabled s8, wipe u8
@@ -201,7 +392,7 @@ void warp_service() {
 
 void cheats_service() {
     warp_service();
-    int inf = g_infinite.load(std::memory_order_relaxed);
+    int inf = g_infinite.load(std::memory_order_relaxed) & ~(kMoonJump | kMoonNoFall | kMoonAllAnims);
     if (!g_pending.load(std::memory_order_relaxed) && !inf) return;
     uint32_t s = save_addr();
     if (s < 0x10000000 || !save_loaded(s)) return;  // stays pending until a file is loaded

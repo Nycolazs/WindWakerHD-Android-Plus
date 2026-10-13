@@ -2,6 +2,7 @@
 #include "platform.h"
 #include "crash_info.h"
 
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <sched.h>
@@ -457,6 +458,51 @@ bool map_fixed(void* addr, size_t size) {
     }
     return true;
 #endif
+}
+
+namespace {
+// lines of a /proc file, and the number after a "Key:" in it (-1 if missing); no allocation
+long proc_lines(const char* path) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    char b[4096];
+    long n = 0;
+    ssize_t r;
+    while ((r = read(fd, b, sizeof b)) > 0)
+        for (ssize_t i = 0; i < r; i++) n += b[i] == '\n';
+    close(fd);
+    return n;
+}
+long proc_value(const char* path, const char* key) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    char b[4096];
+    ssize_t r = read(fd, b, sizeof b - 1);
+    close(fd);
+    if (r <= 0) return -1;
+    b[r] = 0;
+    const size_t kl = strlen(key);
+    for (char* p = b; *p; p++) {
+        if ((p == b || p[-1] == '\n') && !strncmp(p, key, kl)) {
+            p += kl;
+            while (*p == ' ' || *p == '\t' || *p == ':') p++;
+            return strtol(p, nullptr, 10);
+        }
+    }
+    return -1;
+}
+}  // namespace
+
+int process_numbers(char* buf, int size) {
+    long maps = proc_lines("/proc/self/maps"), limit = proc_value("/proc/sys/vm/max_map_count", "");
+    long threads = proc_value("/proc/self/status", "Threads"), rss = proc_value("/proc/self/status", "VmRSS"),
+         vsz = proc_value("/proc/self/status", "VmSize");
+    char lim[40];
+    if (limit > 0) snprintf(lim, sizeof lim, "limit %ld", limit);
+    else snprintf(lim, sizeof lim, "limit not readable, usually 65530");  // apps may not read it (SELinux)
+    int n = snprintf(buf, size, "%ld memory mappings (%s), %ld threads, RSS %ld MB, address space %ld MB", maps, lim, threads,
+                     rss < 0 ? -1 : rss / 1024, vsz < 0 ? -1 : vsz / 1024);
+    return n < 0 ? 0 : std::min(n, size - 1);
 }
 
 void log_line(const char* line) {
