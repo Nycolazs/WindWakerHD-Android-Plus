@@ -22,7 +22,7 @@
 // each place in turn, one every WWHD_TEST_WARP_SECS seconds (default 25), as
 // dComIfGp_setNextStage does (layer -1: the one for the story progress). For trying the game's
 // places without playing up to them (performance, rendering).
-// WWHD_TEST_LOAD_STATE=slot loads that save state 8 s after the start, and
+// WWHD_TEST_LOAD_STATE=slot loads that save state 8 s after a save file is loaded, and
 // WWHD_TEST_SAVE_STATE=slot saves one once the warps are done (the last place).
 #include <algorithm>
 #include <atomic>
@@ -350,8 +350,8 @@ void warp_service() {
     static std::vector<std::string> places;
     static size_t next = 0;
     static int frames = -1, period = 0;
-    static int startFrames = 0;
-    if (startFrames >= 0 && ++startFrames > 30 * 8) {
+    static int startFrames = 0;  // counted once a save file is loaded (a state can't load at the title)
+    if (startFrames >= 0 && save_addr() >= 0x10000000 && save_loaded(save_addr()) && ++startFrames > 30 * 8) {
         startFrames = -1;
         if (const char* e = getenv("WWHD_TEST_LOAD_STATE")) ss::request_load(atoi(e));
     }

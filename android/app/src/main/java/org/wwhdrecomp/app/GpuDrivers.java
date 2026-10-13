@@ -121,6 +121,13 @@ final class GpuDrivers {
         return id;
     }
 
+    /** Forgets that `id` failed at an earlier start (its .probe), for a new try. */
+    static void clearProbe(Context c, String id) {
+        if (id == null || id.isEmpty()) return;
+        //noinspection ResultOfMethodCallIgnored
+        new File(new File(root(c), id), ".probe").delete();
+    }
+
     static void remove(Context c, String id) {
         if (id == null || id.isEmpty()) return;
         File cache = pipelineCache(c, id);

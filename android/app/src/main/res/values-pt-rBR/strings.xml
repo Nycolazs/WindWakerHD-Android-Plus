@@ -234,7 +234,7 @@
     <string-array name="fps_modes">
         <item>30 fps</item>
         <item>60 fps</item>
-        <item>60 fps (adaptativo)</item>
+        <item>60 fps</item>
         <item>True 60 (experimental)</item>
     </string-array>
     <string name="fps_40">40 fps (tela de 120 Hz)</string>

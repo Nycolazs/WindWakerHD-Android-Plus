@@ -460,7 +460,7 @@ using namespace gx2;
 static uint64_t g_swap_count = 0, g_flip_count = 0;
 namespace gx2 { uint64_t flips_presented() { return __atomic_load_n(&g_flip_count, __ATOMIC_RELAXED); } }  // live fps in the title
 static uint32 g_swap_interval = 1;  // as set by the game (frame interpolation halves it)
-namespace interp { uint32_t effective_swap_interval(uint32_t game); int vsync_rate(); }
+namespace interp { uint32_t effective_swap_interval(uint32_t game); int vsync_rate(); bool mode40(); }
 static std::mutex g_flip_mutex;
 static constexpr int64_t kVsyncPeriod = 16683333;  // ns, 59.94 Hz
 // The guest vsync clock: index = base_index + (now - base_ns) / period. It runs free at 59.94 Hz;

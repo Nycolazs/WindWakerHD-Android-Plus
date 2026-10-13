@@ -199,6 +199,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     // system's. The level stays until changed in Graphics.
     static final int GPU_SAFE_MAX = 2;
     private String gpuCrashReason;  // the last session's, shown once the game screen is up
+    private String crashedDriver;   // an installed driver the last session crashed in (now the system's runs)
 
     File gpuCrashFile() { return new File(baseDir(), "gpu_crash.txt"); }
 
@@ -216,8 +217,20 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             }
             //noinspection ResultOfMethodCallIgnored
             f.delete();
-            if (!prefs.getString("gpu_driver", "").isEmpty()) prefs.edit().putString("gpu_driver", "").commit();  // custom driver: back to the system's
-            else setGpuSafeLevel(gpuSafeLevel() + 1);
+            String custom = prefs.getString("gpu_driver", "");
+            if (custom.isEmpty()) setGpuSafeLevel(gpuSafeLevel() + 1);
+            else {
+                // an installed driver: not the safe mode's business. A hang (gpu_lost) is offered a
+                // choice before the game starts (offerGpuDriverAfterLoss); any other crash goes back to
+                // the system driver, named once the game runs. Its .probe goes too: choosing the driver
+                // again is a fresh try.
+                gpuCrashReason = null;
+                if (!new File(baseDir(), "gpu_lost").exists()) {
+                    crashedDriver = gpuDriverLabel();
+                    GpuDrivers.clearProbe(this, custom);
+                    prefs.edit().putString("gpu_driver", "").commit();
+                }
+            }
         }
         setenv("WWHD_GPU_CRASH_FILE", f.getAbsolutePath());
         int l = gpuSafeLevel();
@@ -377,6 +390,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             }, "icons").start();
         }
         String failedDriver = applyGpuDriver();
+        if (failedDriver == null) failedDriver = crashedDriver;
+        crashedDriver = null;
         if (Translation.hasBuiltIn(this)) {  // the built-in Portuguese translation, from the player's own pack (once)
             String terr = Translation.installBuiltIn(this, ptbrDir(), new File(gameDir()));
             if (terr != null) Log.w(TAG, "translation: " + terr);
@@ -448,10 +463,15 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                     .button(R.string.gpu_lost_start, then)
                     .button(R.string.gpu_lost_choose, () -> pickDriverThen(then));
         } else {  // an installed driver hung: going back to the system driver comes first
+            String id = prefs.getString("gpu_driver", "");
             d.message(getString(R.string.gpu_lost_custom, driver))
-                    .button(R.string.gpu_lost_start, then)
+                    .button(R.string.gpu_lost_start, () -> {
+                        GpuDrivers.clearProbe(this, id);  // another try with it
+                        then.run();
+                    })
                     .button(R.string.gpu_lost_choose_other, () -> pickDriverThen(then))
                     .button(R.string.gpu_lost_system_driver, () -> {
+                        GpuDrivers.clearProbe(this, id);
                         prefs.edit().putString("gpu_driver", "").commit();
                         then.run();
                     });
@@ -519,6 +539,13 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         return null;
     }
 
+    // the user's choice: a fresh try for the driver, even if it failed at an earlier start (its .probe
+    // would otherwise send the next start straight back to the system driver)
+    void selectGpuDriver(String id) {
+        GpuDrivers.clearProbe(this, id);
+        prefs.edit().putString("gpu_driver", id).commit();
+    }
+
     String gpuDriverLabel() {
         GpuDrivers.Driver d = GpuDrivers.find(this, prefs.getString("gpu_driver", ""));
         return d != null ? d.name : getString(R.string.gpu_driver_system);
@@ -532,7 +559,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         new GameDialog(this).title(R.string.opt_gpu_driver).message(getString(R.string.gpu_driver_switch, name))
                 .button(R.string.opt_cancel, null)
                 .button(R.string.res_restart_now, () -> {
-                    prefs.edit().putString("gpu_driver", id).commit();
+                    selectGpuDriver(id);
                     restartApp();
                 }).show();
     }
@@ -575,7 +602,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             new GameDialog(this).title(R.string.opt_gpu_driver).message(getString(R.string.gpu_driver_installed, name))
                     .button(R.string.gpu_driver_later, this::driverPickDone)
                     .button(R.string.gpu_driver_use_now, () -> {
-                        prefs.edit().putString("gpu_driver", res).commit();
+                        selectGpuDriver(res);
                         restartApp();
                     }).show();
         });
