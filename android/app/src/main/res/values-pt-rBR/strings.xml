@@ -14,6 +14,8 @@
     <string name="crash_share">Compartilhar registro do travamento</string>
     <string name="crash_share_all">Compartilhar registros de travamento</string>
     <string name="crash_start_game">Iniciar o jogo</string>
+    <string name="cache_loading">Carregando o cache de shaders…</string>
+    <string name="cache_loading_detail">%1$,d variantes de shader preparadas</string>
     <string name="crash_not_now">Agora não</string>
     <string name="crash_subject">Registro de travamento do Wind Waker HD</string>
     <string name="motion_source_pad">Agora: os sensores de %1$s</string>
@@ -395,6 +397,14 @@
     <string name="gpu_driver_not_package">isto não é um pacote de driver (um .zip com meta.json e o arquivo .so do driver)</string>
     <string name="gpu_driver_installed">%1$s está instalado. Usar agora? O jogo reinicia.</string>
     <string name="gpu_driver_use_now">Usar e reiniciar</string>
+    <string name="gpu_lost_title">O driver da GPU parou de responder</string>
+    <string name="gpu_lost_system">O jogo fechou da última vez porque o driver de GPU do celular travou:\n%1$s\n\nIsso pode acontecer com drivers de sistema com defeito. Um driver Turnip costuma rodar o jogo. Escolha um pacote de driver (um .zip no formato AdrenoTools, por exemplo um Turnip recente para o seu Adreno) para usá-lo daqui em diante, ou inicie o jogo assim mesmo.</string>
+    <string name="gpu_lost_custom">O jogo fechou da última vez porque o driver de GPU instalado travou:\n%1$s\n\nVolte ao driver do sistema, escolha outro pacote de driver ou inicie o jogo com este de novo.</string>
+    <string name="gpu_lost_unknown_driver">(driver desconhecido)</string>
+    <string name="gpu_lost_start">Iniciar o jogo</string>
+    <string name="gpu_lost_choose">Escolher um arquivo de driver…</string>
+    <string name="gpu_lost_choose_other">Outro arquivo de driver…</string>
+    <string name="gpu_lost_system_driver">Voltar ao driver do sistema</string>
     <string name="gpu_driver_later">Depois</string>
     <string name="opt_record_thread">Thread de gravação de comandos</string>
     <string name="opt_record_thread_hint">Uma segunda thread da CPU prepara o trabalho da GPU: mais rápido na maioria dos aparelhos, mais lento em alguns (ex.: Snapdragon 855)</string>

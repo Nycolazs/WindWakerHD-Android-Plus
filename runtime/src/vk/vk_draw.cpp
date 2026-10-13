@@ -2098,8 +2098,21 @@ static void cache_record_pipeline(const uint32_t* regs, Shader* vs, Shader* ps, 
     cache_write(kRecPipelineVk, v);
 }
 
+// progress of cache_load for the app's loading screen (cache_progress): 0 not started, 1 loading,
+// 2 done; bytes of the file read and its size; shader variants prepared
+static std::atomic<int> g_cache_state{0};
+static std::atomic<uint64_t> g_cache_done{0}, g_cache_total{0}, g_cache_shaders{0};
+void cache_progress(uint64_t out[4]) {
+    out[0] = (uint64_t)g_cache_state.load();
+    out[1] = g_cache_done.load();
+    out[2] = g_cache_total.load();
+    out[3] = g_cache_shaders.load();
+}
+
 // load and replay the recipes; runs once on the render thread before the first draw
 static void cache_load() {
+    struct Done { ~Done() { g_cache_state = 2; } } done;  // on every way out
+    g_cache_state = 1;
     std::string path = cache_path();
     if (path == "0") { g_cache_disabled = true; return; }
     size_t slash = path.find_last_of('/');
@@ -2107,6 +2120,11 @@ static void cache_load() {
     double t0 = now_ms();
     size_t shaders = 0, pipelines = 0;
     if (FILE* f = fopen(path.c_str(), "rb")) {
+        if (fseek(f, 0, SEEK_END) == 0) {
+            long size = ftell(f);
+            if (size > 0) g_cache_total = (uint64_t)size;
+            rewind(f);
+        }
         static std::vector<uint32_t> regs(0x10000);
         g_cache_replaying = true;
         g_defer_compiles = true;
@@ -2170,6 +2188,11 @@ static void cache_load() {
             if (vertex && !fs) continue;
             get_shader_uncached(regs.data(), vertex, fs, fsKey);
             shaders++;
+            if ((shaders & 255) == 0) {
+                g_cache_shaders = shaders;
+                long at = ftell(f);
+                if (at > 0) g_cache_done = (uint64_t)at;
+            }
         }
         fclose(f);
         g_cache_replaying = false;

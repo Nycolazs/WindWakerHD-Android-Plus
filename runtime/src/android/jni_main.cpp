@@ -198,6 +198,14 @@ JNI_FN(jstring, gpuDriverInfo)(JNIEnv* env, jclass) { return env->NewStringUTF(g
 // the GPU's name as Vulkan reports it ("" until the renderer has started)
 JNI_FN(jstring, gpuName)(JNIEnv* env, jclass) { return env->NewStringUTF(gfx::gpu_name()); }
 JNI_FN(jboolean, gpuDriverFellBack)(JNIEnv*, jclass) { return gfx::driver_fallback(); }
+JNI_FN(jlongArray, cacheProgress)(JNIEnv* env, jclass) {
+    uint64_t p[4];
+    gfx::cache_progress(p);
+    jlongArray a = env->NewLongArray(4);
+    jlong v[4] = {(jlong)p[0], (jlong)p[1], (jlong)p[2], (jlong)p[3]};
+    env->SetLongArrayRegion(a, 0, 4, v);
+    return a;
+}
 
 // ---- extracting the game from the user's disc image (runtime/src/disc), on a Java thread
 static std::atomic<uint64_t> g_extract_done{0}, g_extract_total{0};

@@ -18,9 +18,13 @@
 
 namespace gfx {
 
+// the GPU driver lost the device (it hung or crashed): leaves a note for the app's next start, which
+// offers to load another GPU driver (vk_device.cpp)
+void vk_note_device_lost();
 #define VK_CHECK(x)                                                                     \
     do {                                                                                \
         VkResult r_ = (x);                                                              \
+        if (r_ == VK_ERROR_DEVICE_LOST) ::gfx::vk_note_device_lost();                   \
         if (r_ != VK_SUCCESS) fatal("%s failed: VkResult %d (%s:%d)", #x, (int)r_, __FILE__, __LINE__); \
     } while (0)
 

@@ -32,6 +32,9 @@ const char* driver_info();
 // fast forward (mods/turbo.cpp) runs: present the game's frames only, without frame generation
 void set_fast_forward(bool on);
 const char* gpu_name();
+// the shader cache's replay at start (vk_draw.cpp): {state 0 not started / 1 loading / 2 done, bytes
+// read, file size, shader variants prepared}, for the app's loading screen
+void cache_progress(uint64_t out[4]);
 // an installed GPU driver was chosen but couldn't be loaded: the system's runs
 bool driver_fallback();
 

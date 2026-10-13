@@ -53,6 +53,9 @@ final class Native {
     static native String gpuName();
     /** True if the chosen installed driver couldn't be loaded and the system's runs instead. */
     static native boolean gpuDriverFellBack();
+
+    /** The shader cache's replay at start: {state (0 not started, 1 loading, 2 done), bytes read, file size, shaders prepared}. */
+    static native long[] cacheProgress();
     /** Why frame generation couldn't start, or "" (it runs, or it is off). */
     static native String frameGenError();
 

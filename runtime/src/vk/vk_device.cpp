@@ -2548,6 +2548,20 @@ static void perf_frame() {
 }
 const char* driver_info() { return R.driverInfo.c_str(); }
 const char* gpu_name() { return R.device ? R.props.deviceName : ""; }
+
+// `gpu_lost` in the working directory (the app's files folder, jni_main.cpp): the GPU and the driver
+// that lost the device; MainActivity offers another GPU driver at the next start. Old Qualcomm
+// drivers (v502 on the Adreno 640/650) hang on this game (issue #25); Turnip doesn't.
+void vk_note_device_lost() {
+    static std::atomic<bool> noted{false};
+    if (noted.exchange(true)) return;
+    if (FILE* f = fopen("gpu_lost", "w")) {
+        const char* custom = getenv("WWHD_GPU_DRIVER_DIR");
+        fprintf(f, "%s\n%s\n%s\n", R.device ? R.props.deviceName : "", R.driverInfo.c_str(), custom ? custom : "");
+        fclose(f);
+    }
+    LOG("[vk] device lost (%s, %s): the next start offers another GPU driver", R.device ? R.props.deviceName : "?", R.driverInfo.c_str());
+}
 bool driver_fallback() { return g_driver_fallback; }
 
 void perf_stats(float out[7]) {

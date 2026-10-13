@@ -102,11 +102,13 @@ final class CrashLogs {
             List<android.app.ApplicationExitInfo> exits = am.getHistoricalProcessExitReasons(a.getPackageName(), 0, 5);
             long seen = prefs.getLong("exit_seen_ms", 0);
             android.app.ApplicationExitInfo e = null;
-            for (android.app.ApplicationExitInfo x : exits)
-                if (x.getTimestamp() > seen && (e == null || x.getTimestamp() > e.getTimestamp())) e = x;
-            if (e == null) return;
-            prefs.edit().putLong("exit_seen_ms", e.getTimestamp()).apply();
-            if (!unexpected(e)) return;
+            long newest = seen;
+            for (android.app.ApplicationExitInfo x : exits) {
+                newest = Math.max(newest, x.getTimestamp());
+                if (x.getTimestamp() > seen && !isRestarter(x) && (e == null || x.getTimestamp() > e.getTimestamp())) e = x;
+            }
+            if (newest > seen) prefs.edit().putLong("exit_seen_ms", newest).apply();
+            if (e == null || !unexpected(e) || restarted(e, exits)) return;
             // our crash handler wrote a log for this one already
             File[] own = dir(a).listFiles((d, n) -> isLogName(n));
             if (own != null)
@@ -116,6 +118,21 @@ final class CrashLogs {
         } catch (RuntimeException ignored) {
             // no exit record (some vendors): nothing to report
         }
+    }
+
+    // RestartActivity's own process (it ends itself once the game is launched again)
+    private static boolean isRestarter(android.app.ApplicationExitInfo x) {
+        String n = x.getProcessName();
+        return n != null && n.endsWith(":restart");
+    }
+
+    // the game's process ended by RestartActivity (a restart after a settings change or "Delete
+    // shader cache"): SIGKILL in the foreground, with the restarter's own exit seconds later
+    private static boolean restarted(android.app.ApplicationExitInfo e, List<android.app.ApplicationExitInfo> exits) {
+        if (e.getReason() != android.app.ApplicationExitInfo.REASON_SIGNALED) return false;
+        for (android.app.ApplicationExitInfo x : exits)
+            if (isRestarter(x) && x.getTimestamp() >= e.getTimestamp() && x.getTimestamp() - e.getTimestamp() < 10_000) return true;
+        return false;
     }
 
     // a real problem in the foreground: not our own quit (exit) or restart (killed in the background),

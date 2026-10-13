@@ -348,6 +348,8 @@
     <string name="opt_interp_hint">Frame interpolation: in-between frames from the game\'s 30 fps. Needs a fast CPU; where a frame doesn\'t fit in time it is left out and the game keeps its speed</string>
     <string name="interp_off">30 fps (original)</string>
     <string name="interp_fps">%d fps (interpolated)</string>
+    <string name="cache_loading">Loading the shader cache…</string>
+    <string name="cache_loading_detail">%1$,d shader variants prepared</string>
     <string name="opt_record_thread">Command recording thread</string>
     <string name="opt_record_thread_hint">A second CPU thread prepares the GPU work: faster on most devices, slower on some (e.g. Snapdragon 855)</string>
     <string-array name="record_thread_modes">
@@ -403,6 +405,14 @@
     <string name="gpu_driver_not_package">this is not a driver package (a .zip with meta.json and the driver\'s .so file)</string>
     <string name="gpu_driver_installed">%1$s is installed. Use it now? The game restarts.</string>
     <string name="gpu_driver_use_now">Use and restart</string>
+    <string name="gpu_lost_title">The GPU driver stopped responding</string>
+    <string name="gpu_lost_system">The game closed last time because the phone\'s GPU driver hung:\n%1$s\n\nThis can happen with buggy system drivers. A Turnip driver usually runs the game. Choose a driver package (a .zip in the AdrenoTools format, e.g. a recent Turnip build for your Adreno) to use it from now on, or start the game as it is.</string>
+    <string name="gpu_lost_custom">The game closed last time because the installed GPU driver hung:\n%1$s\n\nGo back to the system driver, choose another driver package, or start the game with this one again.</string>
+    <string name="gpu_lost_unknown_driver">(unknown driver)</string>
+    <string name="gpu_lost_start">Start the game</string>
+    <string name="gpu_lost_choose">Choose a driver file…</string>
+    <string name="gpu_lost_choose_other">Another driver file…</string>
+    <string name="gpu_lost_system_driver">Back to the system driver</string>
     <string name="gpu_driver_later">Later</string>
     <string name="gpu_driver_use">Use</string>
     <string name="gpu_driver_remove">Remove</string>
