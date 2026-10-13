@@ -8,6 +8,9 @@
 
 #include <dirent.h>
 
+#include <algorithm>
+#include <cstdlib>
+
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -169,6 +172,225 @@ std::string find_pack(const std::string& gameDir) {
     return found;
 }
 }  // namespace
+
+namespace {
+// BFFNT version 3 (Wii U): FINF, then TGLP (glyph sheets), CWDH, CMAP blocks. Sheets are GX2
+// surfaces (2D thin tiled, no swizzle) stored bottom-up, RGBA8 (the icon font) or BC4 (the text
+// fonts: one channel, the glyphs' coverage); cells are (cw + 1) x (ch + 1) apart with a 1-texel
+// border, glyph g on sheet g / (cols * rows), at column g % cols and row (g / cols) % rows.
+struct Font {
+    uint32_t cw = 0, ch = 0, cols = 0, rows = 0, w = 0, h = 0, off = 0, sheetSize = 0, sheets = 0;
+    bool bc4 = false;
+    std::vector<std::pair<uint16_t, uint16_t>> cmap;  // code, glyph
+    LatteAddrLib::AddrSurfaceInfo_OUT info{};
+};
+
+bool parse_font(const uint8_t* b, size_t n, Font& f) {
+    if (n < 0x40 || memcmp(b, "FFNT", 4) != 0 || be16(b + 4) != 0xFEFF) return false;
+    size_t p = be16(b + 6);
+    bool tglp = false;
+    while (p + 8 <= n) {
+        uint32_t size = be32(b + p + 4);
+        if (!memcmp(b + p, "TGLP", 4) && p + 32 <= n) {
+            f.cw = b[p + 8];
+            f.ch = b[p + 9];
+            f.sheets = b[p + 10];
+            f.sheetSize = be32(b + p + 12);
+            uint16_t fmt = be16(b + p + 18) & 0x3FFF;
+            f.cols = be16(b + p + 20);
+            f.rows = be16(b + p + 22);
+            f.w = be16(b + p + 24);
+            f.h = be16(b + p + 26);
+            f.off = be32(b + p + 28);
+            f.bc4 = fmt == 12;
+            bool rgba = fmt == 0 || fmt == 14;
+            if (!(rgba || f.bc4) || !f.sheets || !f.w || !f.h || f.w % 4 || f.h % 4) return false;
+            if (f.sheetSize != (f.bc4 ? f.w * f.h / 2 : f.w * f.h * 4) || f.off + (size_t)f.sheets * f.sheetSize > n) return false;
+            tglp = true;
+        } else if (!memcmp(b + p, "CMAP", 4) && p + 20 <= n) {
+            uint16_t lo = be16(b + p + 8), hi = be16(b + p + 10), method = be16(b + p + 12);
+            size_t q = p + 20;
+            if (method == 0 && q + 2 <= n) {
+                uint16_t first = be16(b + q);
+                for (uint32_t c = lo; c <= hi; c++) f.cmap.push_back({(uint16_t)c, (uint16_t)(first + c - lo)});
+            } else if (method == 1) {
+                for (uint32_t c = lo; c <= hi && q + 2 * (c - lo) + 2 <= n; c++) {
+                    uint16_t g = be16(b + q + 2 * (c - lo));
+                    if (g != 0xFFFF) f.cmap.push_back({(uint16_t)c, g});
+                }
+            } else if (method == 2 && q + 2 <= n) {
+                uint16_t cnt = be16(b + q);
+                for (uint32_t i = 0; i < cnt && q + 2 + 4 * i + 4 <= n; i++)
+                    f.cmap.push_back({be16(b + q + 2 + 4 * i), be16(b + q + 4 + 4 * i)});
+            }
+        }
+        if (size < 8) break;
+        p += size;
+    }
+    if (!tglp || !f.cols || !f.rows) return false;
+    LatteAddrLib::GX2CalculateSurfaceInfo((Latte::E_GX2SURFFMT)(f.bc4 ? 0x34 : 0x1A), f.w, f.h, f.sheets,
+                                          f.sheets > 1 ? Latte::E_DIM::DIM_2D_ARRAY : Latte::E_DIM::DIM_2D,
+                                          Latte::MakeGX2TileMode(Latte::E_HWTILEMODE::TM_2D_TILED_THIN1), 0, 0, &f.info);
+    return f.info.surfSize <= (uint64_t)f.sheets * f.sheetSize;
+}
+
+// byte offset in the file of an element of a sheet: a texel (RGBA8) or a 4x4 block (BC4), in the
+// sheet's stored (bottom-up) coordinates
+size_t element(const Font& f, uint32_t sheet, uint32_t x, uint32_t y) {
+    auto tm = (Latte::E_HWTILEMODE)f.info.hwTileMode;
+    uint32_t bpp = f.bc4 ? 64 : 32;
+    // the sheets are the slices of one 2D array surface (the tiling's bank and pipe depend on the slice)
+    uint32_t a = Latte::TM_IsMacroTiled(tm)
+                     ? LatteAddrLib::ComputeSurfaceAddrFromCoordMacroTiled(x, y, sheet, 0, bpp, f.info.pitch, f.info.height, 1, tm, false, 0, 0)
+                     : LatteAddrLib::ComputeSurfaceAddrFromCoordMicroTiled(x, y, sheet, bpp, f.info.pitch, f.info.height, tm, false);
+    return f.off + a;
+}
+
+void bc4_decode(const uint8_t* blk, uint8_t out[16]) {
+    uint8_t v[8] = {blk[0], blk[1]};
+    if (v[0] > v[1])
+        for (int i = 1; i < 7; i++) v[i + 1] = (uint8_t)(((7 - i) * v[0] + i * v[1]) / 7);
+    else {
+        for (int i = 1; i < 5; i++) v[i + 1] = (uint8_t)(((5 - i) * v[0] + i * v[1]) / 5);
+        v[6] = 0;
+        v[7] = 255;
+    }
+    uint64_t bits = 0;
+    for (int i = 0; i < 6; i++) bits |= (uint64_t)blk[2 + i] << (8 * i);
+    for (int i = 0; i < 16; i++) out[i] = v[(bits >> (3 * i)) & 7];
+}
+
+void bc4_encode(const uint8_t in[16], uint8_t blk[8]) {
+    uint8_t lo = 255, hi = 0;
+    for (int i = 0; i < 16; i++) lo = std::min(lo, in[i]), hi = std::max(hi, in[i]);
+    if (hi == lo) {  // flat: every index 0
+        blk[0] = hi;
+        blk[1] = lo;
+        memset(blk + 2, 0, 6);
+        return;
+    }
+    uint8_t v[8] = {hi, lo};
+    for (int i = 1; i < 7; i++) v[i + 1] = (uint8_t)(((7 - i) * hi + i * lo) / 7);
+    uint64_t bits = 0;
+    for (int i = 0; i < 16; i++) {
+        int best = 0, bestErr = 1 << 30;
+        for (int k = 0; k < 8; k++) {
+            int e = std::abs((int)v[k] - (int)in[i]);
+            if (e < bestErr) bestErr = e, best = k;
+        }
+        bits |= (uint64_t)best << (3 * i);
+    }
+    blk[0] = hi;
+    blk[1] = lo;
+    for (int i = 0; i < 6; i++) blk[2 + i] = (uint8_t)(bits >> (8 * i));
+}
+
+// a glyph's sheet and top-left texel (picture coordinates, top row first), or false
+bool cell_of(const Font& f, uint16_t code, uint32_t& sheet, uint32_t& x, uint32_t& y) {
+    for (auto& [c, g] : f.cmap)
+        if (c == code) {
+            uint32_t per = f.cols * f.rows;
+            sheet = g / per;
+            uint32_t k = g % per;
+            x = (k % f.cols) * (f.cw + 1) + 1;
+            y = (k / f.cols) * (f.ch + 1) + 1;
+            return sheet < f.sheets && x + f.cw <= f.w && y + f.ch <= f.h;
+        }
+    return false;
+}
+
+// texel (x, y) of a sheet's picture as RGBA (BC4: white with the coverage as alpha)
+void get_texel(const Font& f, const uint8_t* font, size_t size, uint32_t sheet, uint32_t x, uint32_t y, uint8_t px[4]) {
+    uint32_t sy = f.h - 1 - y;
+    if (!f.bc4) {
+        size_t o = element(f, sheet, x, sy);
+        if (o + 4 <= size) memcpy(px, font + o, 4);
+        return;
+    }
+    size_t o = element(f, sheet, x / 4, sy / 4);
+    uint8_t t[16] = {};
+    if (o + 8 <= size) bc4_decode(font + o, t);
+    px[0] = px[1] = px[2] = 255;
+    px[3] = t[(sy % 4) * 4 + x % 4];
+}
+}  // namespace
+
+bool font_cells(const uint8_t* font, size_t size, const std::vector<uint16_t>& codes, std::vector<uint8_t>& rgba,
+                uint32_t& cw, uint32_t& ch) {
+    Font f;
+    if (!parse_font(font, size, f)) return false;
+    cw = f.cw;
+    ch = f.ch;
+    rgba.assign((size_t)codes.size() * f.cw * f.ch * 4, 0);
+    for (size_t i = 0; i < codes.size(); i++) {
+        uint32_t s, x0, y0;
+        if (!cell_of(f, codes[i], s, x0, y0)) continue;  // not in this font: left transparent
+        for (uint32_t y = 0; y < f.ch; y++)
+            for (uint32_t x = 0; x < f.cw; x++) get_texel(f, font, size, s, x0 + x, y0 + y, &rgba[((i * f.ch + y) * f.cw + x) * 4]);
+    }
+    return true;
+}
+
+namespace {
+// a glyph's widths (CWDH: left, glyph width, advance) set to the whole cell: a redrawn text font
+// character (narrow katakana) then shows all of its new picture
+void full_width(uint8_t* b, size_t n, const Font& f, uint16_t code) {
+    int glyph = -1;
+    for (auto& [c, g] : f.cmap)
+        if (c == code) glyph = g;
+    if (glyph < 0) return;
+    size_t p = be16(b + 6);
+    while (p + 8 <= n) {
+        uint32_t size = be32(b + p + 4);
+        if (!memcmp(b + p, "CWDH", 4) && p + 16 <= n) {
+            uint16_t first = be16(b + p + 8), last = be16(b + p + 10);
+            if (glyph >= first && glyph <= last && p + 16 + 3 * (size_t)(glyph - first) + 3 <= n) {
+                uint8_t* e = b + p + 16 + 3 * (glyph - first);
+                e[0] = 0;
+                e[1] = (uint8_t)f.cw;
+                e[2] = (uint8_t)f.cw;
+            }
+        }
+        if (size < 8) break;
+        p += size;
+    }
+}
+}  // namespace
+
+bool font_patch(uint8_t* font, size_t size, const std::vector<uint16_t>& codes, const uint8_t* rgba, size_t rgbaSize) {
+    Font f;
+    if (!parse_font(font, size, f) || rgbaSize < (size_t)codes.size() * f.cw * f.ch * 4) return false;
+    if (f.bc4)
+        for (uint16_t c : codes) full_width(font, size, f, c);
+    for (size_t i = 0; i < codes.size(); i++) {
+        uint32_t s, x0, y0;
+        if (!cell_of(f, codes[i], s, x0, y0)) continue;
+        if (!f.bc4) {
+            for (uint32_t y = 0; y < f.ch; y++)
+                for (uint32_t x = 0; x < f.cw; x++) {
+                    size_t o = element(f, s, x0 + x, f.h - 1 - (y0 + y));
+                    if (o + 4 <= size) memcpy(font + o, &rgba[((i * f.ch + y) * f.cw + x) * 4], 4);
+                }
+            continue;
+        }
+        // BC4: every block the cell touches is decoded, the cell's texels (alpha) set, encoded again
+        uint32_t sy0 = f.h - (y0 + f.ch), sy1 = f.h - 1 - y0;  // the cell's stored rows
+        for (uint32_t by = sy0 / 4; by <= sy1 / 4; by++)
+            for (uint32_t bx = x0 / 4; bx <= (x0 + f.cw - 1) / 4; bx++) {
+                size_t o = element(f, s, bx, by);
+                if (o + 8 > size) continue;
+                uint8_t t[16];
+                bc4_decode(font + o, t);
+                for (int k = 0; k < 16; k++) {
+                    uint32_t x = bx * 4 + k % 4, sy = by * 4 + k / 4, y = f.h - 1 - sy;
+                    if (x < x0 || x >= x0 + f.cw || y < y0 || y >= y0 + f.ch) continue;
+                    t[k] = rgba[((i * f.ch + (y - y0)) * f.cw + (x - x0)) * 4 + 3];
+                }
+                bc4_encode(t, font + o);
+            }
+    }
+    return true;
+}
 
 int extract(const std::string& gameDir, const std::string& outDir, const std::vector<Request>& requests) {
     Bytes pack;

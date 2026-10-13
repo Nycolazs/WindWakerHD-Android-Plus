@@ -76,6 +76,80 @@ final class PackPatch {
         if (!tmp.renameTo(outFile)) throw new IOException("cannot write " + outFile);
     }
 
+    interface Edit { byte[] apply(byte[] file) throws IOException; }
+
+    /**
+     * Writes `outFile`: `origFile` (a pack) with the file `inner` of its archive `entry` (a Yaz0
+     * SARC) replaced by `edit` of it, which keeps its size; the rest copied as it is.
+     */
+    static void replaceInner(File origFile, String entry, String inner, Edit edit, File outFile) throws IOException {
+        Map<String, Map<String, Edit>> m = new HashMap<>();
+        m.computeIfAbsent(entry, k -> new HashMap<>()).put(inner, edit);
+        replaceInner(origFile, m, outFile);
+    }
+
+    /** As above for several files: archive entry -> (file in it -> edit); every one must be there. */
+    static void replaceInner(File origFile, Map<String, Map<String, Edit>> edits, File outFile) throws IOException {
+        byte[] d = Files.readAllBytes(origFile.toPath());
+        ByteBuffer b = ByteBuffer.wrap(d);
+        if (d.length < 0x20 || b.getInt(0) != 0x53415243 || b.getShort(6) != (short) 0xFEFF) throw new IOException("not a SARC pack");
+        int data = b.getInt(12), n = b.getShort(0x1A) & 0xFFFF, names = 0x20 + 16 * n + 8;
+        byte[] head = java.util.Arrays.copyOf(d, data);
+        ByteBuffer h = ByteBuffer.wrap(head);
+        ByteArrayOutputStream body = new ByteArrayOutputStream(d.length + (1 << 20));
+        int done = 0;
+        for (int i = 0; i < n; i++) {
+            int node = 0x20 + 16 * i, attr = b.getInt(node + 4), s = b.getInt(node + 8), e = b.getInt(node + 12);
+            byte[] ent = java.util.Arrays.copyOfRange(d, data + s, data + e);
+            String entry = name(d, names, attr);
+            Map<String, Edit> files = edits.get(entry);
+            if (files != null) {
+                byte[] arc = yaz0(ent);
+                for (Map.Entry<String, Edit> fe : files.entrySet()) {
+                    String inner = fe.getKey();
+                    int[] at = find(arc, inner);
+                    if (at == null) throw new IOException(entry + " lacks " + inner);
+                    byte[] f = fe.getValue().apply(java.util.Arrays.copyOfRange(arc, at[0], at[1]));
+                    if (f.length != at[1] - at[0]) throw new IOException(inner + " changed size");
+                    System.arraycopy(f, 0, arc, at[0], f.length);
+                }
+                ent = storedYaz0(arc, ent);
+                done++;
+            }
+            while (body.size() % 0x100 != 0) body.write(0);
+            int start = body.size();
+            body.write(ent);
+            h.putInt(node + 8, start);
+            h.putInt(node + 12, body.size());
+        }
+        if (done != edits.size()) throw new IOException("the pack lacks files to change");
+        h.putInt(8, head.length + body.size());
+        File tmp = new File(outFile.getPath() + ".part");
+        try (OutputStream out = new FileOutputStream(tmp)) {
+            out.write(head);
+            body.writeTo(out);
+        }
+        if (!tmp.renameTo(outFile)) throw new IOException("cannot write " + outFile);
+    }
+
+    private static String name(byte[] d, int names, int attr) {
+        int o = names + (attr & 0xFFFFFF) * 4, z = o;
+        while (z < d.length && d[z] != 0) z++;
+        return new String(d, o, z - o, java.nio.charset.StandardCharsets.US_ASCII);
+    }
+
+    // a file's [start, end) in an archive (a big-endian SARC), or null
+    private static int[] find(byte[] a, String file) {
+        ByteBuffer b = ByteBuffer.wrap(a);
+        if (a.length < 0x20 || b.getInt(0) != 0x53415243) return null;
+        int data = b.getInt(12), n = b.getShort(0x1A) & 0xFFFF, names = 0x20 + 16 * n + 8;
+        for (int i = 0; i < n; i++) {
+            int node = 0x20 + 16 * i;
+            if (name(a, names, b.getInt(node + 4)).equals(file)) return new int[] {data + b.getInt(node + 8), data + b.getInt(node + 12)};
+        }
+        return null;
+    }
+
     private static Map<String, Entry> parse(byte[] p) throws IOException {
         ByteBuffer b = ByteBuffer.wrap(p);
         if (p.length < 12 || b.getInt() != 0x57575054 || b.getInt() != 1) throw new IOException("bad translation patch");

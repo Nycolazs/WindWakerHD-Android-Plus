@@ -187,6 +187,35 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 .button(R.string.res_restart_now, this::restartApp).show();
     }
 
+    // ---- the button style mod (ButtonStyle): the touch controls' letters at once, the game's own
+    // icons (its icon font in the 2D packs, over the translation when it is on) from the next start
+    int buttonStyle() { return prefs.getInt("button_style", ButtonStyle.WIIU); }
+
+    void setButtonStyle(int style) {
+        if (style == buttonStyle()) return;
+        prefs.edit().putInt("button_style", style).commit();
+        if (controls != null) controls.setButtonLabels(ButtonStyle.touchLabels(style));
+        askRestart(R.string.opt_button_style);
+    }
+
+    // the folder whose content/ files the game reads instead of its own ("" none): the button style
+    // mod's packs (made here when needed), else the translation's
+    private String contentOverlay() {
+        File base = baseDir();
+        int style = buttonStyle();
+        if (style != ButtonStyle.WIIU) {
+            InputMapper m = new InputMapper();
+            m.loadMap(prefs.getString("pad_map", ""));
+            File[] sources = ptbrEnabled() ? new File[] {ptbrDir(), new File(gameDir())} : new File[] {new File(gameDir())};
+            long t0 = android.os.SystemClock.uptimeMillis();
+            String err = ButtonStyle.build(base, sources, style, m.map);
+            if (err != null) Log.w(TAG, "button style: " + err);
+            Log.i(TAG, "button style " + style + " ready in " + (android.os.SystemClock.uptimeMillis() - t0) + " ms");
+            if (ButtonStyle.ready(base)) return ButtonStyle.dir(base).getAbsolutePath();
+        }
+        return ptbrEnabled() ? ptbrDir().getAbsolutePath() : "";
+    }
+
     void removePtbr() {
         prefs.edit().putBoolean("mod_ptbr", false).commit();
         Translation.remove(ptbrDir());
@@ -396,7 +425,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             String terr = Translation.installBuiltIn(this, ptbrDir(), new File(gameDir()));
             if (terr != null) Log.w(TAG, "translation: " + terr);
         }
-        Native.setContentOverlay(ptbrEnabled() ? ptbrDir().getAbsolutePath() : "");
+        Native.setContentOverlay(contentOverlay());
         Native.start(gameDir(), new File(base, "save").getAbsolutePath(),
                 new File(getNoBackupFilesDir(), "shadercache").getAbsolutePath(), base.getAbsolutePath());
         started = true;
@@ -962,6 +991,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         controls.setPerfHud(prefs.getBoolean("perf_hud", false));
         controls.setPerfItems(prefs.getInt("perf_items", ControlsView.PERF_ALL));
         mapper.loadMap(prefs.getString("pad_map", ""));
+        controls.setButtonLabels(ButtonStyle.touchLabels(buttonStyle()));
         controls.perfSettings = this::perfSettingsLines;
         controls.setPerfPosition(prefs.getFloat("perf_x", -1), prefs.getFloat("perf_y", -1));
     }

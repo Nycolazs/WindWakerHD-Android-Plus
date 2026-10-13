@@ -76,6 +76,18 @@ final class ControlsView extends View {
     private final TouchIcons icons;
     private final List<Ctl> controls = new ArrayList<>();
     private final HashMap<String, Ctl> byId = new HashMap<>();
+    // the button style mod (ButtonStyle): the buttons' letters by Wii U button bit
+    private java.util.Map<Integer, String> styleLabels = new HashMap<>();
+
+    void setButtonLabels(java.util.Map<Integer, String> labels) {
+        styleLabels = labels;
+        invalidate();
+    }
+
+    private String labelOf(Ctl c) {
+        String s = c.kind == K_BUTTON ? styleLabels.get(c.bit) : null;
+        return s != null ? s : c.label;
+    }
     private final SparseArray<Ctl> pointers = new SparseArray<>();
     private int drcPointer = -1;
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG), stroke = new Paint(Paint.ANTI_ALIAS_FLAG),
@@ -1189,7 +1201,7 @@ final class ControlsView extends View {
             case "a": {
                 String n = TouchIcons.at(TouchIcons.A_ACTIONS, state[HUD_A]);
                 if (n != null) name = n;
-                else overlay = "A";
+                else overlay = labelOf(c);
                 break;
             }
             case "b": {
@@ -1206,7 +1218,7 @@ final class ControlsView extends View {
                 int slot = c.id.equals("x") ? HUD_X : c.id.equals("y") ? HUD_Y : HUD_R;
                 String n = TouchIcons.at(TouchIcons.ITEMS, state[slot]);
                 if (n != null) name = n;
-                else overlay = c.label;
+                else overlay = labelOf(c);
                 break;
             }
             case "zl":
@@ -1217,7 +1229,7 @@ final class ControlsView extends View {
         }
         boolean pressed = c.pressed;
         boolean hasIcon = icons.get(name) != null;
-        icons.draw(canvas, name, c.color, overlay != null ? overlay : c.label, c.cx, c.cy, c.r, a, pressed);
+        icons.draw(canvas, name, c.color, overlay != null ? overlay : labelOf(c), c.cx, c.cy, c.r, a, pressed);
         if (hasIcon && overlay != null) icons.label(canvas, overlay, c.cx, c.cy, c.r, a);
     }
 
@@ -1332,7 +1344,7 @@ final class ControlsView extends View {
             Ctl c = editPanelCtls.get(i);
             float x = left + baseUnit * 0.2f + (i % cols + 0.5f) * cell, y = top + baseUnit * 0.7f + (i / cols + 0.5f) * cell;
             editPanelSlots.add(new RectF(x - cell / 2, y - cell / 2, x + cell / 2, y + cell / 2));
-            icons.draw(canvas, c.icon, c.color, c.label, x, y, r, 255, false);
+            icons.draw(canvas, c.icon, c.color, labelOf(c), x, y, r, 255, false);
         }
     }
 }

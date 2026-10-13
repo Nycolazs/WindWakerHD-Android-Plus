@@ -641,6 +641,8 @@ final class OptionsMenu extends Dialog {
         submenu(R.string.opt_ptbr, R.string.opt_ptbr_hint, a.ptbrInstalled() ? a.getString(a.ptbrEnabled() ? R.string.opt_on : R.string.opt_off)
                 : a.getString(R.string.ptbr_not_installed), () -> openPage(this::ptbrPage));
         submenu(R.string.opt_cheats, R.string.opt_cheats_hint, "", () -> openPage(this::cheatsPage));
+        choice(R.string.opt_button_style, R.string.opt_button_style_hint, a.getResources().getStringArray(R.array.button_styles),
+               a.buttonStyle(), a::setButtonStyle);
         int[] labels = {R.string.opt_mod_direct_camera, R.string.opt_mod_first_person, R.string.opt_mod_climb,
                         R.string.opt_mod_quick_doors, R.string.opt_mod_fast_scenes, R.string.opt_mod_ff_cutscenes,
                         R.string.opt_mod_ff_dialogues};

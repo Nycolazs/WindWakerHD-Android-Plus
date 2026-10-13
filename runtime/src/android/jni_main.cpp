@@ -478,6 +478,37 @@ JNI_FN(jint, extractUiTextures)(JNIEnv* env, jclass, jstring gameDir, jstring ou
     return ui_icons::extract(jstr(env, gameDir), jstr(env, outDir), req);
 }
 
+// the icon font's cells (ButtonStyle): {cell width, cell height as 4 bytes each, little-endian},
+// then RGBA8 per code; null if the font isn't the expected kind
+JNI_FN(jbyteArray, fontCells)(JNIEnv* env, jclass, jbyteArray font, jintArray codes) {
+    std::vector<uint8_t> f(env->GetArrayLength(font));
+    env->GetByteArrayRegion(font, 0, (jsize)f.size(), (jbyte*)f.data());
+    std::vector<jint> c(env->GetArrayLength(codes));
+    env->GetIntArrayRegion(codes, 0, (jsize)c.size(), c.data());
+    std::vector<uint16_t> cs(c.begin(), c.end());
+    std::vector<uint8_t> rgba;
+    uint32_t cw = 0, ch = 0;
+    if (!ui_icons::font_cells(f.data(), f.size(), cs, rgba, cw, ch)) return nullptr;
+    jbyteArray out = env->NewByteArray((jsize)(8 + rgba.size()));
+    uint32_t hdr[2] = {cw, ch};
+    env->SetByteArrayRegion(out, 0, 8, (const jbyte*)hdr);
+    env->SetByteArrayRegion(out, 8, (jsize)rgba.size(), (const jbyte*)rgba.data());
+    return out;
+}
+
+// writes cells (as fontCells returns them, without the header) into the font array, in place
+JNI_FN(jboolean, patchFontCells)(JNIEnv* env, jclass, jbyteArray font, jintArray codes, jbyteArray cells) {
+    std::vector<uint8_t> f(env->GetArrayLength(font)), r(env->GetArrayLength(cells));
+    env->GetByteArrayRegion(font, 0, (jsize)f.size(), (jbyte*)f.data());
+    env->GetByteArrayRegion(cells, 0, (jsize)r.size(), (jbyte*)r.data());
+    std::vector<jint> c(env->GetArrayLength(codes));
+    env->GetIntArrayRegion(codes, 0, (jsize)c.size(), c.data());
+    std::vector<uint16_t> cs(c.begin(), c.end());
+    if (!ui_icons::font_patch(f.data(), f.size(), cs, r.data(), r.size())) return JNI_FALSE;
+    env->SetByteArrayRegion(font, 0, (jsize)f.size(), (const jbyte*)f.data());
+    return JNI_TRUE;
+}
+
 // game state for the touch controls' icons (ControlsView)
 JNI_FN(jintArray, hudState)(JNIEnv* env, jclass) {
     int32_t s[touch_hud::kSize];

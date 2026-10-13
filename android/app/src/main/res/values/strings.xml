@@ -243,6 +243,13 @@
     <string name="opt_haptics">Vibrate on touch</string>
     <string name="opt_cheats">Cheats</string>
     <string name="opt_cheats_hint">Items, sword and shield, hearts, infinite health…</string>
+    <string name="opt_button_style">Button icons</string>
+    <string name="opt_button_style_hint">The buttons\' symbols on the touch controls and in the game (its HUD and text): Wii U, Xbox or PlayStation, following the controller buttons you assigned. The game\'s icons change after a restart</string>
+    <string-array name="button_styles">
+        <item>Wii U (Nintendo)</item>
+        <item>Xbox</item>
+        <item>PlayStation</item>
+    </string-array>
     <string name="cheat_note">Cheats change the loaded save file; they last once the game is saved. The game itself takes the sword away in Forsaken Fortress and the bow in the Tower of the Gods.</string>
     <string name="cheat_apply">Apply</string>
     <string name="cheat_done">Cheat applied</string>

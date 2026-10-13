@@ -256,6 +256,13 @@
     <string name="opt_haptics">Vibrar ao tocar</string>
     <string name="opt_cheats">Trapaças</string>
     <string name="opt_cheats_hint">Itens, espada e escudo, corações, vida infinita…</string>
+    <string name="opt_button_style">Ícones dos botões</string>
+    <string name="opt_button_style_hint">Os símbolos dos botões nos controles de toque e no jogo (HUD e textos): Wii U, Xbox ou PlayStation, seguindo os botões do controle que você configurou. Os ícones do jogo mudam depois de reiniciar</string>
+    <string-array name="button_styles">
+        <item>Wii U (Nintendo)</item>
+        <item>Xbox</item>
+        <item>PlayStation</item>
+    </string-array>
     <string name="cheat_note">As trapaças alteram o save carregado; elas ficam depois que o jogo é salvo. O próprio jogo tira a espada na Forsaken Fortress e o arco na Tower of the Gods.</string>
     <string name="cheat_apply">Aplicar</string>
     <string name="cheat_done">Trapaça aplicada</string>
