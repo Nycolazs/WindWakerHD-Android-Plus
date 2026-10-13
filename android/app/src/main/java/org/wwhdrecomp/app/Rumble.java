@@ -12,9 +12,9 @@ import android.view.InputDevice;
 import java.util.ArrayDeque;
 
 /**
- * The GamePad's rumble on the controller in use, or on this device while playing by touch. The game
- * sends patterns of up to one second (VPADControlMotor: one bit per 1/120 s); like Cemu, up to five
- * play one after another, in steps of 1/60 s. The Pro Controller's motor is just on or off.
+ * The GamePad's rumble on the controller in use, or on this device while playing by touch or with a
+ * controller without rumble. The game sends patterns of up to one second (VPADControlMotor: one bit
+ * per 1/120 s); like Cemu, up to five play one after another, in steps of 1/60 s. The Pro Controller's motor is just on or off.
  */
 final class Rumble {
     private static final int QUEUE_MAX = 5;
@@ -105,12 +105,13 @@ final class Rumble {
 
     private static long ms(int steps) { return Math.round(steps * 1000.0 / 60); }
 
-    // the controller's motor if it has one, this device's only while playing by touch
+    // the controller's motor if it has one, else this device's (playing by touch, or a controller
+    // without rumble)
     private Vibrator vibrator() {
         if (controller != null) {
             Vibrator v = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ? controller.getVibratorManager().getDefaultVibrator()
                     : controller.getVibrator();
-            return v != null && v.hasVibrator() ? v : null;
+            if (v != null && v.hasVibrator()) return v;
         }
         Vibrator v = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
                 ? ((VibratorManager) context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE)).getDefaultVibrator()

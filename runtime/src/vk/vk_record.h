@@ -52,6 +52,12 @@ void CmdClearDepthStencilImage(VkCommandBuffer, VkImage, VkImageLayout, const Vk
 void CmdResetQueryPool(VkCommandBuffer, VkQueryPool, uint32_t, uint32_t);
 void CmdWriteTimestamp(VkCommandBuffer, VkPipelineStageFlagBits, VkQueryPool, uint32_t);
 
+// GPU breadcrumbs (WWHD_GPU_BREADCRUMBS=1, for GPU hangs): see vk_record.cpp
+bool crumbs_enabled();
+void crumb_pipeline(VkPipeline pipeline, uint64_t vsKey, uint64_t psKey);
+void crumbs_submitted();  // record thread, after the stream's vkQueueSubmit
+void crumbs_report();
+
 }  // namespace gfx::rec
 
 #ifndef WWHD_VK_RECORD_IMPLEMENTATION

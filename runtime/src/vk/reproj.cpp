@@ -385,7 +385,7 @@ VkPipeline create_pipeline(const char* src) {
     ci.layout = S.layout;
     ci.renderPass = S.pass;
     VkPipeline pipe = VK_NULL_HANDLE;
-    VK_CHECK(vkCreateGraphicsPipelines(R.device, R.pipelineCache, 1, &ci, nullptr, &pipe));
+    VK_CHECK(create_graphics_pipeline(&ci, &pipe));
     vkDestroyShaderModule(R.device, vs, nullptr);
     vkDestroyShaderModule(R.device, fs, nullptr);
     return pipe;

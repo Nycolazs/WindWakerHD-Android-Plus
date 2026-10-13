@@ -21,6 +21,8 @@ namespace gfx {
 // the GPU driver lost the device (it hung or crashed): leaves a note for the app's next start, which
 // offers to load another GPU driver (vk_device.cpp)
 void vk_note_device_lost();
+// vkCreateGraphicsPipelines with the pipeline cache, one at a time where the driver needs it (vk_device.cpp)
+VkResult create_graphics_pipeline(const VkGraphicsPipelineCreateInfo* ci, VkPipeline* out);
 #define VK_CHECK(x)                                                                     \
     do {                                                                                \
         VkResult r_ = (x);                                                              \
@@ -114,6 +116,9 @@ struct Renderer {
     bool shaderFloat16 = false;  // 16-bit float arithmetic in shaders (frame generation)
     VkPipelineCache pipelineCache = VK_NULL_HANDLE;
     std::mutex queueMutex;  // vkQueueSubmit/Present from the render thread, waits from the UI thread
+    // vkAcquireNextImageKHR (render thread) and vkQueuePresentKHR (record thread) on the same swapchain
+    // need external synchronization; taken before queueMutex
+    std::mutex swapchainMutex;
 
     VkCommandPool cmdPool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;  // recording, or null

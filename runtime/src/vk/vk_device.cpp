@@ -247,6 +247,7 @@ void record_thread_main() {
             pi.pImageIndices = &job.imageIndex;
             VkResult r;
             {
+                std::lock_guard<std::mutex> sl(R.swapchainMutex);
                 std::lock_guard<std::mutex> lk(R.queueMutex);
                 r = vkQueuePresentKHR(R.queue, &pi);
             }
@@ -303,6 +304,7 @@ void record_thread_main() {
                 std::lock_guard<std::mutex> lk(R.queueMutex);
                 VK_CHECK(vkQueueSubmit(R.queue, 1, &si, fence));
             }
+            rec::crumbs_submitted();
             g_record_cpu_ns.fetch_add(thread_cpu_ns() - cpu0, std::memory_order_relaxed);
             g_record_stream_bytes.fetch_add(streamBytes, std::memory_order_relaxed);
             g_record_streams.fetch_add(1, std::memory_order_relaxed);
@@ -735,6 +737,28 @@ static std::string pipeline_cache_path_v1() {
     return p.replace(p.rfind("/pipelines2-"), 12, "/pipelines-");
 }
 
+// Qualcomm's older drivers (v502 on the Adreno 640/650, issue #25) sometimes build broken pipelines
+// when several threads create them at once with a pipeline cache; the GPU then hangs each time one is
+// drawn with (about every second start on a Mi 9, mostly in the first seconds while the shader cache
+// is replayed). Not with one thread at a time (0 in 25 starts), nor without the cache, nor with a
+// cache for each thread (5 in 15). There pipelines are created one at a time; the shaders' translation
+// stays parallel. The tablet's v762 never hung. WWHD_SERIAL_PIPELINES=0/1 overrides.
+static bool serial_pipelines() {
+    static const bool on = [] {
+        if (const char* e = getenv("WWHD_SERIAL_PIPELINES")) return strcmp(e, "0") != 0;
+        const uint32_t v = (R.props.driverVersion >> 12) & 0x3FF;
+        return R.driverID == VK_DRIVER_ID_QUALCOMM_PROPRIETARY && v < 700;
+    }();
+    return on;
+}
+static std::mutex g_pipeline_mutex;  // with serial_pipelines: creation and saving the cache
+
+VkResult create_graphics_pipeline(const VkGraphicsPipelineCreateInfo* ci, VkPipeline* out) {
+    if (!serial_pipelines()) return vkCreateGraphicsPipelines(R.device, R.pipelineCache, 1, ci, nullptr, out);
+    std::lock_guard<std::mutex> lk(g_pipeline_mutex);
+    return vkCreateGraphicsPipelines(R.device, R.pipelineCache, 1, ci, nullptr, out);
+}
+
 static void load_pipeline_cache() {
     std::vector<uint8_t> data;
     if (const char* e = getenv("WWHD_SHADER_CACHE"); !(e && !strcmp(e, "0"))) {
@@ -763,6 +787,10 @@ static void load_pipeline_cache() {
             data.clear();
         }
     }
+    if (getenv("WWHD_NO_PIPELINE_CACHE")) {  // debug: pipelines compiled without the driver's cache
+        LOG("[vk] pipeline cache off (WWHD_NO_PIPELINE_CACHE)");
+        return;
+    }
     VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
     ci.initialDataSize = data.size();
     ci.pInitialData = data.empty() ? nullptr : data.data();
@@ -773,15 +801,22 @@ static void load_pipeline_cache() {
         VK_CHECK(vkCreatePipelineCache(R.device, &ci, nullptr, &R.pipelineCache));
     }
     if (!data.empty()) LOG("[vk] pipeline cache: %zu KiB", data.size() / 1024);
+    if (serial_pipelines()) LOG("[vk] pipelines are created one at a time (%s)", R.driverInfo.c_str());
 }
 
+// render thread (every 1800 frames with new pipelines) and UI thread (app paused)
 void save_caches() {
     if (!R.pipelineCache) return;
     if (const char* e = getenv("WWHD_SHADER_CACHE"); e && !strcmp(e, "0")) return;
+    static std::mutex saving;
+    std::lock_guard<std::mutex> sl(saving);
+    std::unique_lock<std::mutex> lk(g_pipeline_mutex, std::defer_lock);
+    if (serial_pipelines()) lk.lock();
     size_t n = 0;
     if (vkGetPipelineCacheData(R.device, R.pipelineCache, &n, nullptr) != VK_SUCCESS || !n) return;
     std::vector<uint8_t> data(n);
     if (vkGetPipelineCacheData(R.device, R.pipelineCache, &n, data.data()) != VK_SUCCESS) return;
+    lk = {};
     std::string path = pipeline_cache_path(), tmp = path + ".tmp";
     if (FILE* f = fopen(tmp.c_str(), "wb")) {
         bool ok = fwrite(data.data(), 1, n, f) == n;
@@ -1134,7 +1169,7 @@ VkPipeline create_present_pipeline(VkRenderPass pass) {
     pi.layout = g_present_layout;
     pi.renderPass = pass;
     VkPipeline p;
-    VK_CHECK(vkCreateGraphicsPipelines(R.device, R.pipelineCache, 1, &pi, nullptr, &p));
+    VK_CHECK(create_graphics_pipeline(&pi, &p));
     return p;
 }
 
@@ -1457,7 +1492,11 @@ bool present_frame() {
     }
     uint32_t idx = 0;
     // a short timeout: a window that isn't being composited must not stall the game
-    VkResult r = vkAcquireNextImageKHR(R.device, g_sc.sc, 100 * 1000000ull, acquire, VK_NULL_HANDLE, &idx);
+    VkResult r;
+    {
+        std::lock_guard<std::mutex> sl(R.swapchainMutex);
+        r = vkAcquireNextImageKHR(R.device, g_sc.sc, 100 * 1000000ull, acquire, VK_NULL_HANDLE, &idx);
+    }
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_TIMEOUT || r == VK_NOT_READY || r < 0) {
         if (r != VK_TIMEOUT && r != VK_NOT_READY) g_sc.stale = true;
         g_acquire_free.push_back(acquire);  // unsignaled
@@ -1501,6 +1540,7 @@ bool present_frame() {
         pi.pSwapchains = &g_sc.sc;
         pi.pImageIndices = &idx;
         {
+            std::lock_guard<std::mutex> sl(R.swapchainMutex);
             std::lock_guard<std::mutex> lk(R.queueMutex);
             r = vkQueuePresentKHR(R.queue, &pi);
         }
@@ -1527,7 +1567,11 @@ void present_drc_window() {
         VK_CHECK(vkCreateSemaphore(R.device, &si, nullptr, &acquire));
     }
     uint32_t idx = 0;
-    VkResult r = vkAcquireNextImageKHR(R.device, g_sc_drc.sc, 10 * 1000000ull, acquire, VK_NULL_HANDLE, &idx);
+    VkResult r;
+    {
+        std::lock_guard<std::mutex> sl(R.swapchainMutex);
+        r = vkAcquireNextImageKHR(R.device, g_sc_drc.sc, 10 * 1000000ull, acquire, VK_NULL_HANDLE, &idx);
+    }
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_TIMEOUT || r == VK_NOT_READY || r < 0) {
         if (r != VK_TIMEOUT && r != VK_NOT_READY) g_sc_drc.stale = true;
         g_drc_acquire_free.push_back(acquire);
@@ -1567,6 +1611,7 @@ void present_drc_window() {
         pi.pSwapchains = &g_sc_drc.sc;
         pi.pImageIndices = &idx;
         {
+            std::lock_guard<std::mutex> sl(R.swapchainMutex);
             std::lock_guard<std::mutex> lk(R.queueMutex);
             r = vkQueuePresentKHR(R.queue, &pi);
         }
@@ -1641,7 +1686,11 @@ bool fg_present(const Image* img) {
     PresentSlot& ps = g_fg_slots[g_fg_next];
     vkWaitForFences(R.device, 1, &ps.fence, VK_TRUE, UINT64_MAX);
     uint32_t idx = 0;
-    VkResult r = vkAcquireNextImageKHR(R.device, g_sc.sc, 100 * 1000000ull, ps.acquire, VK_NULL_HANDLE, &idx);
+    VkResult r;
+    {
+        std::lock_guard<std::mutex> sl(R.swapchainMutex);
+        r = vkAcquireNextImageKHR(R.device, g_sc.sc, 100 * 1000000ull, ps.acquire, VK_NULL_HANDLE, &idx);
+    }
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_TIMEOUT || r == VK_NOT_READY || r < 0) {
         if (r != VK_TIMEOUT && r != VK_NOT_READY) g_sc.stale = true;
         return false;
@@ -1714,6 +1763,7 @@ bool fg_present(const Image* img) {
     pi.pSwapchains = &g_sc.sc;
     pi.pImageIndices = &idx;
     {
+        std::lock_guard<std::mutex> sl(R.swapchainMutex);
         std::lock_guard<std::mutex> lk(R.queueMutex);
         VK_CHECK(vkQueueSubmit(R.queue, 1, &si, ps.fence));
         r = vkQueuePresentKHR(R.queue, &pi);
@@ -2561,6 +2611,7 @@ void vk_note_device_lost() {
         fclose(f);
     }
     LOG("[vk] device lost (%s, %s): the next start offers another GPU driver", R.device ? R.props.deviceName : "?", R.driverInfo.c_str());
+    rec::crumbs_report();
 }
 bool driver_fallback() { return g_driver_fallback; }
 

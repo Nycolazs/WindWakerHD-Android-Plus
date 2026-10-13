@@ -255,6 +255,7 @@ public:
         static std::once_flag once;
         std::call_once(once, [this] {
             unsigned n = std::clamp(std::thread::hardware_concurrency() / 2, 2u, 4u);
+            if (const char* e = getenv("WWHD_COMPILE_THREADS")) n = std::clamp(atoi(e), 1, 8);  // debug
             for (unsigned i = 0; i < n; i++)
                 std::thread([this] {
                     platform::set_thread_name("shader compile");
@@ -492,6 +493,19 @@ static void compile_shader(Shader* sh) {
     }
     // the game's Gaussian blur on upscaled targets: each tap covers one guest texel (area_sample.h)
     if (sh->areaUnits && vk_area_sample::rewrite(src, sh->areaUnits) <= 0) LOG("[gfx] pixel shader: area-sampled taps not applied");
+    // debug: WWHD_DUMP_SHADER=<key>[,<key>…] (hex, as the GPU breadcrumbs name them) writes the
+    // translation to shader_<key>.glsl in the files folder
+    static const char* dumpKeys = getenv("WWHD_DUMP_SHADER");
+    if (dumpKeys) {
+        char k[20];
+        snprintf(k, sizeof k, "%016llx", (unsigned long long)sh->key);
+        if (strstr(dumpKeys, k)) {
+            char name[48];
+            snprintf(name, sizeof name, "shader_%s.glsl", k);
+            if (FILE* f = fopen(name, "w")) { fputs(src.c_str(), f); fclose(f); }
+            LOG("[gfx] shader %s written to %s", k, name);
+        }
+    }
     uint64_t hash = hash_bytes(src.data(), src.size(), sh->vertex ? 0x5653ull : 0x5053ull) ^ src.size();
     auto it = g_modules.find(hash);
     if (it != g_modules.end()) {
@@ -1239,12 +1253,15 @@ static Pipeline* get_pipeline(const uint32_t* regs, Shader* vs, Shader* ps, Latt
     d->pi.layout = pl->layout;
     d->pi.renderPass = get_render_pass(st.pass);
 
-    auto build = [pl, d] {
+    auto build = [pl, d, vsKey = vs->key, psKey = ps->key] {
         auto t0 = std::chrono::steady_clock::now();
-        VkResult r = vkCreateGraphicsPipelines(R.device, R.pipelineCache, 1, &d->pi, nullptr, &pl->pipeline);
+        VkResult r = create_graphics_pipeline(&d->pi, &pl->pipeline);
         g_t_pipeline_us += (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
         if (r != VK_SUCCESS) LOG("[gfx] pipeline creation failed: VkResult %d", (int)r);
-        else g_pipelines_created++;
+        else {
+            g_pipelines_created++;
+            rec::crumb_pipeline(pl->pipeline, vsKey, psKey);
+        }
         pl->status.store(r == VK_SUCCESS ? CS_READY : CS_FAILED, std::memory_order_release);
         compile_done();
     };
@@ -1286,9 +1303,9 @@ void set_aniso(bool v) { g_aniso = v; LOG("[gfx] anisotropic filtering %s", v ? 
 // allowAniso: the bound texture is a real mipmapped asset (not a buffer the GPU rendered); the game also
 // reads its screen-sized lighting/occlusion buffers through mip-filtering samplers, and anisotropy there
 // blurs the screen-space effects
-static VkSampler get_sampler(const uint32_t* w, bool allowAniso = false) {
-    const bool anisoForce = allowAniso && aniso_enabled();
-    uint64_t h = hash_bytes(w, 12) ^ (anisoForce ? 0x5A5A5A5A5A5A5A5Aull : 0);
+static VkSampler get_sampler(const uint32_t* w, bool allowAniso = false, bool nearestOnly = false) {
+    const bool anisoForce = allowAniso && aniso_enabled() && !nearestOnly;
+    uint64_t h = hash_bytes(w, 12) ^ (anisoForce ? 0x5A5A5A5A5A5A5A5Aull : 0) ^ (nearestOnly ? 0x4E4E4E4E00000000ull : 0);
     auto it = g_samplers.find(h);
     if (it != g_samplers.end()) return it->second;
     LATTE_SQ_TEX_SAMPLER_WORD0_0 w0;
@@ -1305,6 +1322,10 @@ static VkSampler get_sampler(const uint32_t* w, bool allowAniso = false) {
     d.minFilter = xy((uint32_t)w0.get_XY_MIN_FILTER());
     uint32_t mip = (uint32_t)w0.get_MIP_FILTER();
     d.mipmapMode = mip >= 2 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    if (nearestOnly) {  // the format can't be filtered (filters_linear)
+        d.magFilter = d.minFilter = VK_FILTER_NEAREST;
+        d.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    }
     float maxAniso = 1.0f;
     if (uint32_t aniso = w0.get_MAX_ANISO_RATIO()) maxAniso = (float)std::min(1u << aniso, 16u);
     if (anisoForce && mip != 0 && d.minFilter == VK_FILTER_LINEAR && (uint32_t)w0.get_DEPTH_COMPARE_FUNCTION() == 0) maxAniso = 16;
@@ -1505,7 +1526,31 @@ struct StageTextures {
     VkSampler sampler[LATTE_NUM_MAX_TEX_UNITS];
     float unitScale[LATTE_NUM_MAX_TEX_UNITS];  // by texture unit: resolution scale of the bound surface (x)
     float unitScaleY[LATTE_NUM_MAX_TEX_UNITS]; // ... (y; differs from x for aspect-widened targets)
+    Image* sampled[LATTE_NUM_MAX_TEX_UNITS];   // by binding: the image to prepare for sampling (prepare_sampled)
+    int count = 0;
 };
+
+// Every sampled image goes to its shader-read layout once all textures of the draw are resolved:
+// resolving one texture can copy from another one already resolved (a surface at the same address
+// in another format, a feedback copy), which leaves that one in TRANSFER_SRC while its descriptor
+// says SHADER_READ_ONLY (found by the validation layer).
+static void prepare_sampled(StageTextures& t) {
+    for (int i = 0; i < t.count; i++)
+        if (t.sampled[i]) prepare(*t.sampled[i], Use::SAMPLED);
+}
+
+// Linear filtering where the format supports it (depth formats often don't: D32_SFLOAT on the Adreno
+// 640 with Qualcomm's driver v502; found by the validation layer)
+static bool filters_linear(VkFormat f) {
+    static std::unordered_map<uint32_t, bool> known;  // render thread
+    auto it = known.find((uint32_t)f);
+    if (it != known.end()) return it->second;
+    VkFormatProperties fp;
+    vkGetPhysicalDeviceFormatProperties(R.pd, f, &fp);
+    bool ok = (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
+    if (!ok) LOG("[gfx] format %d can't be filtered linearly: its textures are point sampled", (int)f);
+    return known.emplace((uint32_t)f, ok).first->second;
+}
 
 static void resolve_textures(const uint32_t* regs, Shader* sh, bool vertex, Surface* const* colors, Surface* depth, StageTextures& out) {
     LatteDecompilerShader* dec = sh->dec;
@@ -1513,9 +1558,11 @@ static void resolve_textures(const uint32_t* regs, Shader* sh, bool vertex, Surf
     uint32_t texBase = vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
     uint32_t samplerBase = vertex ? SAMPLER_BASE_INDEX_VERTEX : SAMPLER_BASE_INDEX_PIXEL;
     for (int u = 0; u < LATTE_NUM_MAX_TEX_UNITS; u++) out.unitScale[u] = out.unitScaleY[u] = 1.0f;
+    out.count = rm.getTextureCount();
     for (sint32 i = 0; i < rm.getTextureCount(); i++) {
         out.view[i] = VK_NULL_HANDLE;
         out.sampler[i] = VK_NULL_HANDLE;
+        out.sampled[i] = nullptr;
         sint32 unit = rm.getRelativeTextureUnitFromRelativeBindingPoint(i);
         if (unit < 0) continue;
         VkImageViewType type = shader_view_type(dec->textureUnitDim[unit]);
@@ -1538,7 +1585,7 @@ static void resolve_textures(const uint32_t* regs, Shader* sh, bool vertex, Surf
              regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + (std::min<uint32_t>(samplerIdx, 17) + samplerBase) * 3 + 1],
              regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + (std::min<uint32_t>(samplerIdx, 17) + samplerBase) * 3 + 2]);
         if (v) {
-            prepare(s->img, Use::SAMPLED);
+            out.sampled[i] = &s->img;  // prepared once the draw's textures are all resolved (prepare_sampled)
             out.unitScale[unit] = s->rscale * s->ax;
             out.unitScaleY[unit] = s->rscale * s->ay;
         }
@@ -1556,7 +1603,11 @@ static void resolve_textures(const uint32_t* regs, Shader* sh, bool vertex, Surf
             patched[0] = (patched[0] & ~0x7E00u) | (1u << 9) | (1u << 12);  // XY mag/min filter: bilinear
             sw = patched;
         }
-        out.sampler[i] = get_sampler(sw, s && !s->gpuWritten && s->mips > 1);
+        // compare samplers (shadow maps) filter depth by the compare feature, not this one
+        LATTE_SQ_TEX_SAMPLER_WORD0_0 sw0;
+        memcpy(&sw0, &sw[0], 4);
+        const bool nearestOnly = v && s && (uint32_t)sw0.get_DEPTH_COMPARE_FUNCTION() == 0 && !filters_linear(s->img.format);
+        out.sampler[i] = get_sampler(sw, s && !s->gpuWritten && s->mips > 1, nearestOnly);
     }
 }
 
@@ -2763,6 +2814,8 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     StageTextures vtex, ptex;
     resolve_textures(regs, vs, true, colors, depth, vtex);
     resolve_textures(regs, ps, false, colors, depth, ptex);
+    prepare_sampled(vtex);
+    prepare_sampled(ptex);
 
     // A draw that binds a subset of the open render pass's attachments (the game switches between
     // colour only, colour + its R8 second target, with and without depth on its main buffer) stays in

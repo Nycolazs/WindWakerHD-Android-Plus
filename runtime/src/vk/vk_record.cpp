@@ -4,10 +4,16 @@
 #include "vk.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <thread>
+#include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <type_traits>
+#include <unordered_map>
 
 namespace gfx::rec {
 namespace {
@@ -292,16 +298,165 @@ void CmdWriteTimestamp(VkCommandBuffer cmd, VkPipelineStageFlagBits stage, VkQue
     Writer w(Op::WriteTimestamp, sizeof(Timestamp)); w.put(Timestamp{stage, pool, query});
 }
 
+// GPU breadcrumbs (WWHD_GPU_BREADCRUMBS=1): to find the work a GPU hang is stuck in. After each render
+// pass, dispatch, copy, blit or clear the record thread adds a barrier that waits for everything
+// before it and a fill of a host-visible word with the work's number; a ring keeps a description of
+// each numbered piece of work. After VK_ERROR_DEVICE_LOST (crumbs_report) the word holds the last
+// piece the GPU finished, so the next one in the ring is where it hung. Serializes the GPU: a debug
+// switch only (the record thread must be on).
+namespace {
+struct Crumb {
+    uint32_t seq = 0;
+    uint64_t stream = 0;
+    char what[200] = {};
+};
+constexpr uint32_t kCrumbs = 2048;
+Crumb g_crumbs[kCrumbs];
+uint32_t g_crumb_seq = 0;  // record thread
+std::atomic<uint32_t> g_crumb_seq_seen{0};  // g_crumb_seq once its stream is submitted (crumbs_submitted)
+uint64_t g_crumb_stream = 0;
+VkBuffer g_crumb_buf = VK_NULL_HANDLE;
+VmaAllocation g_crumb_alloc = nullptr;
+volatile uint32_t* g_crumb_word = nullptr;
+std::mutex g_crumb_pipe_mutex;
+std::unordered_map<VkPipeline, std::pair<uint64_t, uint64_t>> g_crumb_pipes;
+// the render pass being replayed
+struct CrumbPass {
+    bool open = false;
+    uint32_t w = 0, h = 0, draws = 0;
+    VkRenderPass rp = VK_NULL_HANDLE;
+    VkPipeline pipes[6] = {};
+    uint32_t nPipes = 0;
+    bool more = false;
+} g_crumb_pass;
+
+bool crumb_buffer() {
+    if (g_crumb_word) return true;
+    VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bi.size = 64;
+    bi.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VmaAllocationCreateInfo ai{};
+    ai.usage = VMA_MEMORY_USAGE_AUTO;
+    ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    ai.requiredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    VmaAllocationInfo info{};
+    if (vmaCreateBuffer(R.vma, &bi, &ai, &g_crumb_buf, &g_crumb_alloc, &info) != VK_SUCCESS) return false;
+    g_crumb_word = (volatile uint32_t*)info.pMappedData;
+    *g_crumb_word = 0;
+    LOG("[vk] GPU breadcrumbs on (WWHD_GPU_BREADCRUMBS): the GPU runs one piece of work at a time");
+    // the driver recovers from a hang by skipping the submission (up to 3 times before the device is
+    // lost): log each piece of work the GPU stops at for 100 ms while more is recorded
+    std::thread([] {
+        uint32_t last = 0, reported = 0;
+        auto since = std::chrono::steady_clock::now();
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            uint32_t done = *g_crumb_word, seq = g_crumb_seq_seen.load(std::memory_order_relaxed);
+            auto now = std::chrono::steady_clock::now();
+            if (done != last || done >= seq) {
+                last = done;
+                since = now;
+                continue;
+            }
+            if (reported != done + 1 && now - since > std::chrono::milliseconds(100)) {
+                reported = done + 1;
+                const Crumb& c = g_crumbs[reported % kCrumbs];
+                LOG("[vk] GPU breadcrumbs: no progress for 100 ms at #%u (stream %llu): %s", reported,
+                    (unsigned long long)c.stream, c.seq == reported ? c.what : "?");
+                const Crumb& p = g_crumbs[done % kCrumbs];
+                if (p.seq == done) LOG("[vk]   after #%u (stream %llu): %s", done, (unsigned long long)p.stream, p.what);
+            }
+        }
+    }).detach();
+    return true;
+}
+
+void crumb_mark(VkCommandBuffer cmd, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+void crumb_mark(VkCommandBuffer cmd, const char* fmt, ...) {
+    if (!crumb_buffer()) return;
+    uint32_t seq = ++g_crumb_seq;
+    Crumb& c = g_crumbs[seq % kCrumbs];
+    c.stream = g_crumb_stream;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(c.what, sizeof c.what, fmt, ap);
+    va_end(ap);
+    c.seq = seq;
+    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    mb.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+    vkCmdFillBuffer(cmd, g_crumb_buf, 0, 4, seq);
+}
+
+void crumb_end_pass(VkCommandBuffer cmd) {
+    CrumbPass& p = g_crumb_pass;
+    char pipes[160] = {};
+    size_t n = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_crumb_pipe_mutex);
+        for (uint32_t i = 0; i < p.nPipes && n < sizeof pipes - 40; i++) {
+            auto it = g_crumb_pipes.find(p.pipes[i]);
+            if (it != g_crumb_pipes.end())
+                n += snprintf(pipes + n, sizeof pipes - n, " %016llx/%016llx", (unsigned long long)it->second.first,
+                              (unsigned long long)it->second.second);
+            else
+                n += snprintf(pipes + n, sizeof pipes - n, " (own)");
+        }
+    }
+    crumb_mark(cmd, "pass %ux%u rp %p, %u draws, vs/ps%s%s", p.w, p.h, (void*)p.rp, p.draws, pipes, p.more ? " …" : "");
+    p = CrumbPass{};
+}
+}  // namespace
+
+bool crumbs_enabled() {
+    static const bool on = getenv("WWHD_GPU_BREADCRUMBS") != nullptr;
+    return on;
+}
+
+void crumb_pipeline(VkPipeline pipeline, uint64_t vsKey, uint64_t psKey) {
+    if (!crumbs_enabled()) return;
+    std::lock_guard<std::mutex> lk(g_crumb_pipe_mutex);
+    g_crumb_pipes[pipeline] = {vsKey, psKey};
+}
+
+void crumbs_submitted() {
+    if (crumbs_enabled()) g_crumb_seq_seen.store(g_crumb_seq, std::memory_order_relaxed);
+}
+
+void crumbs_report() {
+    if (!crumbs_enabled() || !g_crumb_word) return;
+    uint32_t done = *g_crumb_word, last = g_crumb_seq;
+    LOG("[vk] GPU breadcrumbs: the GPU finished #%u of #%u recorded", done, last);
+    for (uint32_t s = done > 3 ? done - 3 : 1; s <= last && s <= done + 6; s++) {
+        const Crumb& c = g_crumbs[s % kCrumbs];
+        if (c.seq != s) continue;
+        LOG("[vk]   %s #%u (stream %llu): %s", s <= done ? "done" : s == done + 1 ? "HUNG" : "after", s,
+            (unsigned long long)c.stream, c.what);
+    }
+}
+
 void replay(const Stream& stream, VkCommandBuffer cmd) {
+    const bool crumbs = crumbs_enabled();
+    if (crumbs) g_crumb_stream++;
     size_t at = 0;
     while (at < stream.data.size()) {
         Header h; memcpy(&h, stream.data.data() + at, sizeof(h));
         Reader r{stream.data.data() + at, sizeof(Header)};
         switch (h.op) {
         case Op::BeginRenderPass: { auto v = r.get<VkRenderPassBeginInfo>(); auto c = r.get<VkSubpassContents>();
-            v.pClearValues = r.array<VkClearValue>(v.clearValueCount); vkCmdBeginRenderPass(cmd, &v, c); break; }
-        case Op::EndRenderPass: vkCmdEndRenderPass(cmd); break;
-        case Op::BindPipeline: { auto v = r.get<BindPipeline>(); vkCmdBindPipeline(cmd, v.point, v.pipeline); break; }
+            v.pClearValues = r.array<VkClearValue>(v.clearValueCount); vkCmdBeginRenderPass(cmd, &v, c);
+            if (crumbs) g_crumb_pass = CrumbPass{true, v.renderArea.extent.width, v.renderArea.extent.height, 0, v.renderPass};
+            break; }
+        case Op::EndRenderPass: vkCmdEndRenderPass(cmd); if (crumbs) crumb_end_pass(cmd); break;
+        case Op::BindPipeline: { auto v = r.get<BindPipeline>(); vkCmdBindPipeline(cmd, v.point, v.pipeline);
+            if (crumbs && g_crumb_pass.open) {
+                CrumbPass& p = g_crumb_pass;
+                bool seen = false;
+                for (uint32_t i = 0; i < p.nPipes; i++) seen |= p.pipes[i] == v.pipeline;
+                if (!seen) { if (p.nPipes < 6) p.pipes[p.nPipes++] = v.pipeline; else p.more = true; }
+            }
+            break; }
         case Op::BindDescriptorSets: { auto v = r.get<BindDescriptorSets>(); auto sets = r.array<VkDescriptorSet>(v.sets);
             auto offsets = r.array<uint32_t>(v.offsets); vkCmdBindDescriptorSets(cmd, v.point, v.layout, v.first, v.sets, sets, v.offsets, offsets); break; }
         case Op::BindVertexBuffers: { auto v = r.get<BindVertexBuffers>(); auto b = r.array<VkBuffer>(v.count);
@@ -315,9 +470,11 @@ void replay(const Stream& stream, VkCommandBuffer cmd) {
         case Op::SetStencilReference: { auto v = r.get<Stencil>(); vkCmdSetStencilReference(cmd, v.face, v.value); break; }
         case Op::SetStencilWriteMask: { auto v = r.get<Stencil>(); vkCmdSetStencilWriteMask(cmd, v.face, v.value); break; }
         case Op::PushConstants: { auto v = r.get<PushConstants>(); vkCmdPushConstants(cmd, v.layout, v.stages, v.offset, v.size, r.bytes(v.size)); break; }
-        case Op::Draw: { auto v = r.get<Draw>(); vkCmdDraw(cmd, v.vertices, v.instances, v.firstVertex, v.firstInstance); break; }
-        case Op::DrawIndexed: { auto v = r.get<DrawIndexed>(); vkCmdDrawIndexed(cmd, v.indices, v.instances, v.firstIndex, v.vertexOffset, v.firstInstance); break; }
-        case Op::Dispatch: { auto v = r.get<Dispatch>(); vkCmdDispatch(cmd, v.x, v.y, v.z); break; }
+        case Op::Draw: { auto v = r.get<Draw>(); vkCmdDraw(cmd, v.vertices, v.instances, v.firstVertex, v.firstInstance); g_crumb_pass.draws++; break; }
+        case Op::DrawIndexed: { auto v = r.get<DrawIndexed>(); vkCmdDrawIndexed(cmd, v.indices, v.instances, v.firstIndex, v.vertexOffset, v.firstInstance); g_crumb_pass.draws++; break; }
+        case Op::Dispatch: { auto v = r.get<Dispatch>(); vkCmdDispatch(cmd, v.x, v.y, v.z);
+            if (crumbs) crumb_mark(cmd, "dispatch %ux%ux%u", v.x, v.y, v.z);
+            break; }
         case Op::PipelineBarrier: { auto v = r.get<PipelineBarrier>(); auto m = r.array<VkMemoryBarrier>(v.mem);
             auto b = r.array<VkBufferMemoryBarrier>(v.buf); auto i = r.array<VkImageMemoryBarrier>(v.img);
             vkCmdPipelineBarrier(cmd, v.src, v.dst, v.deps, v.mem, m, v.buf, b, v.img, i); break; }
@@ -330,6 +487,12 @@ void replay(const Stream& stream, VkCommandBuffer cmd) {
         case Op::ClearDepthStencilImage: { auto v = r.get<ClearDepth>(); vkCmdClearDepthStencilImage(cmd, v.image, v.layout, &v.value, v.count, r.array<VkImageSubresourceRange>(v.count)); break; }
         case Op::ResetQueryPool: { auto v = r.get<ResetQuery>(); vkCmdResetQueryPool(cmd, v.pool, v.first, v.count); break; }
         case Op::WriteTimestamp: { auto v = r.get<Timestamp>(); vkCmdWriteTimestamp(cmd, v.stage, v.pool, v.query); break; }
+        }
+        if (crumbs && !g_crumb_pass.open) {
+            static const char* const kNames[] = {"copy image", "copy image", "blit", "upload (buffer to image)",
+                                                 "readback (image to buffer)", "clear color", "clear depth"};
+            if (h.op >= Op::CopyImage && h.op <= Op::ClearDepthStencilImage)
+                crumb_mark(cmd, "%s", kNames[(int)h.op - (int)Op::CopyImage]);
         }
         at += h.size;
     }

@@ -168,6 +168,28 @@ static void crash_handler(int sig, siginfo_t* si, void* uctx) {
                          c->r[i + 2], c->r[i + 3], c->r[i + 4], c->r[i + 5], c->r[i + 6], c->r[i + 7]);
             crash_write(buf, n);
         }
+        // guest memory at registers that point into game data (heaps, objects, the stack): 128 bytes
+        // each, so a crash in game code shows the state it read (e.g. a heap that ran out). The whole
+        // guest address space is mapped readable (core.cpp), so these reads can't fault.
+        uint32_t dumped[12];
+        int nd = 0;
+        for (int i = 0; i < 32 && nd < 12; i++) {
+            if (i == 2 || i == 13) continue;  // the game's constant and small-data areas: always the same
+            uint32_t v = c->r[i] & ~3u;
+            if (v < 0x10000000u || v >= 0x80000000u) continue;
+            bool seen = false;
+            for (int k = 0; k < nd; k++) seen |= dumped[k] == v;
+            if (seen) continue;
+            dumped[nd++] = v;
+            n = snprintf(buf, sizeof buf, "  memory at r%d (%08X):\n", i, v);
+            crash_write(buf, n);
+            for (uint32_t o = 0; o < 128; o += 32) {
+                n = snprintf(buf, sizeof buf, "    +%02X %08X %08X %08X %08X %08X %08X %08X %08X\n", o, ld32(v + o),
+                             ld32(v + o + 4), ld32(v + o + 8), ld32(v + o + 12), ld32(v + o + 16), ld32(v + o + 20),
+                             ld32(v + o + 24), ld32(v + o + 28));
+                crash_write(buf, n);
+            }
+        }
         // guest return chain (back-chain words on the guest stack)
         crash_write("  guest call chain:", 19);
         uint32_t sp = c->r[1];
