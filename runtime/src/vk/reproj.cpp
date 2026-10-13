@@ -43,7 +43,7 @@ layout(set=0,binding=3) uniform sampler2D sceneImg;  // the TV picture before th
 layout(set=0,binding=4) uniform sampler2D flowImg;   // objects' own movement per 16x16 block (kFlow)
 layout(location=0) in vec2 uv;
 layout(location=0) out vec4 result;
-layout(push_constant) uniform P { vec4 r0; vec4 r1; vec4 r2; vec4 t; vec4 z; vec4 rect; } p;
+layout(push_constant) uniform P { vec4 r0; vec4 r1; vec4 r2; vec4 t; vec4 z; vec4 rect; vec4 a; } p;
 // the nearest depth of the 2x2 pixels around q: the game's outlines around characters lie on the
 // background's depth and would otherwise move with the background (depth range [-1,1] as GX2)
 float viewDepth(vec2 q) {
@@ -51,8 +51,19 @@ float viewDepth(vec2 q) {
  float d = min(min(m.x, m.y), min(m.z, m.w)), n = p.z.x, f = p.z.y;
  return 2.0 * n * f / max((f + n) - (d * 2.0 - 1.0) * (f - n), 1e-6);
 }
+// how much the pixel at q moves with the camera, 0..1: what lies about as far as the point the
+// camera looks at (a.x; a.y: on). The camera follows Link (and the title's boat): they and what is
+// near them keep their place on the screen while the camera moves, so moving them with the camera's
+// movement shook them back and forth every frame; the background, further away, is reprojected.
+float follows(vec2 q) {
+ if (p.a.y < 0.5 || p.a.x <= 0.0) return 0.0;
+ float r = abs(log(max(viewDepth(q), 1e-3) / p.a.x));
+ return 1.0 - smoothstep(0.35, 0.75, r);
+}
 // where the real picture's pixel q (TV uv) is in the generated picture
-vec2 toGen(vec2 q) {
+vec2 toGenCam(vec2 q);
+vec2 toGen(vec2 q) { return mix(toGenCam(q), q, follows(q)); }
+vec2 toGenCam(vec2 q) {
  vec3 P = vec3((q.x * 2.0 - 1.0) * p.t.x, (1.0 - q.y * 2.0) * p.t.y, -1.0) * viewDepth(q) - vec3(p.r0.w, p.r1.w, p.r2.w);
  vec3 g = p.r0.xyz * P.x + p.r1.xyz * P.y + p.r2.xyz * P.z;
  if (g.z > -1e-4) return q;
@@ -67,7 +78,7 @@ vec2 objectMove(vec2 q) {
  if (f.w < 0.5) return vec2(0.0);
  float bz = p.z.x * exp(f.z * log(p.z.y / p.z.x)), z = viewDepth(q);
  if (abs(z - bz) > 0.15 * bz) return vec2(0.0);
- return (f.xy - 0.5) * (0.5 / 8.0);
+ return (f.xy - 0.5) * (0.5 / 8.0) * (1.0 - follows(q));  // (what follows the camera already keeps its place)
 }
 bool hudAt(vec2 q) {
  vec3 d = abs(textureLod(scanImg, q, 0.0).rgb - textureLod(sceneImg, q, 0.0).rgb);
@@ -211,11 +222,12 @@ struct Target {
     VkFramebuffer fb = VK_NULL_HANDLE;
 };
 
-struct Push { float r0[4], r1[4], r2[4], t[4], z[4], rect[4]; };
+struct Push { float r0[4], r1[4], r2[4], t[4], z[4], rect[4], a[4]; };
 
 struct Cam {
     float m[9];  // camera-to-world: columns right, up, back (the camera looks along -z)
     float eye[3];
+    float target = 0;  // distance from the eye to the point the camera looks at (Link, the title's boat)
     float fovy = 40, znear = 1, zfar = 100000;
     uint64_t frame = 0;
     bool valid = false;
@@ -519,6 +531,8 @@ void note_camera(const float eye[3], const float center[3], const float up[3], f
     if (S.cur.frame != R.frame) S.prev = S.cur;  // the frame's last camera counts (others: 2D, menus)
     basis(eye, center, up, S.cur.m);
     std::memcpy(S.cur.eye, eye, sizeof S.cur.eye);
+    S.cur.target = std::sqrt((center[0] - eye[0]) * (center[0] - eye[0]) + (center[1] - eye[1]) * (center[1] - eye[1]) +
+                             (center[2] - eye[2]) * (center[2] - eye[2]));
     S.cur.fovy = fovy;
     S.cur.znear = znear;
     S.cur.zfar = zfar;
@@ -632,9 +646,12 @@ std::vector<const Image*> record(VkCommandBuffer cmd, const Image& comp, VkImage
     float half[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}, move[3] = {0, 0, 0};
     float full[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1}, fullMove[3] = {0, 0, 0};
     bool fullValid = false;
-    float fovy, znear, zfar;
+    float fovy, znear, zfar, target;
+    // WWHD_FRAMEGEN_FOLLOW=0: everything moves with the camera's movement (as before)
+    static const bool followOn = !getenv("WWHD_FRAMEGEN_FOLLOW") || atoi(getenv("WWHD_FRAMEGEN_FOLLOW")) != 0;
     {
         std::lock_guard<std::mutex> lk(S.mu);
+        target = S.cur.target;
         fovy = S.cur.fovy;
         znear = S.cur.znear;
         zfar = S.cur.zfar;
@@ -703,7 +720,8 @@ std::vector<const Image*> record(VkCommandBuffer cmd, const Image& comp, VkImage
     const float tanY = std::tan(fovy * 0.5f * 3.14159265f / 180.0f), tanX = tanY * (float)R.tv.img.width / (float)R.tv.img.height;
     static const float hudThreshold = getenv("WWHD_FRAMEGEN_HUD") ? (float)atof(getenv("WWHD_FRAMEGEN_HUD")) : 3.0f / 255.0f;
     Push pc{{half[0], half[1], half[2], move[0]}, {half[3], half[4], half[5], move[1]}, {half[6], half[7], half[8], move[2]},
-            {tanX, tanY, hudThreshold, getenv("WWHD_FRAMEGEN_TINT") ? 1.0f : 0.0f}, {znear, zfar, 1, 0}, {tvRect[0], tvRect[1], tvRect[2], tvRect[3]}};
+            {tanX, tanY, hudThreshold, getenv("WWHD_FRAMEGEN_TINT") ? 1.0f : 0.0f}, {znear, zfar, 1, 0}, {tvRect[0], tvRect[1], tvRect[2], tvRect[3]},
+            {target, followOn ? 1.0f : 0.0f, 0, 0}};
 
     // sampled images: layouts the renderer tracks (recorded into this command buffer before the pass)
     prepare(depth->img, Use::SAMPLED);
