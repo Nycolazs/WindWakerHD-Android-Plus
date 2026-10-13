@@ -527,8 +527,18 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         setenv("WWHD_GPU_DRIVER_LIB", d.library);
         // Turnip: always render in tiles (GMEM). Its automatic choice falls back to direct rendering for
         // many of the game's passes, which measured slower on an Adreno 740 (25 -> 28.5 fps in a heavy
-        // scene); a TU_DEBUG in wwhd.env wins
-        if (d.library.contains("freedreno") && Os.getenv("TU_DEBUG") == null) setenv("TU_DEBUG", "gmem");
+        // scene). On Adreno 6xx also without UBWC compression: with it, Turnip (26.0 to 26.3) above 1x
+        // resolution restarted a Galaxy S20 FE (Adreno 650, kernel 4.19) at the first frame (a fatal
+        // bus error, TZBSP_ERR_FATAL_NOC_ERROR); without it 1.5x runs, and 1x is as fast (18.2 against
+        // 19.5 ms of GPU time per frame). A TU_DEBUG in wwhd.env wins
+        if (d.turnip() && Os.getenv("TU_DEBUG") == null) {
+            java.util.List<String> dbg = new java.util.ArrayList<>();
+            if (d.library.contains("freedreno")) dbg.add("gmem");
+            String gpu = GpuDrivers.gpuModel();
+            if (gpu.startsWith("Adreno6")) dbg.add("noubwc");
+            Log.i(TAG, "Turnip on " + (gpu.isEmpty() ? "an unknown GPU" : gpu) + ": TU_DEBUG=" + String.join(",", dbg));
+            if (!dbg.isEmpty()) setenv("TU_DEBUG", String.join(",", dbg));
+        }
         setenv("WWHD_GPU_HOOK_DIR", GpuDrivers.hookDir(this).getAbsolutePath() + "/");
         try {
             //noinspection ResultOfMethodCallIgnored
