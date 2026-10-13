@@ -34,7 +34,7 @@ final class ButtonStyle {
     private ButtonStyle() {}
 
     static final int WIIU = 0, XBOX = 1, PLAYSTATION = 2;
-    private static final int VERSION = 5;  // bump to rebuild the packs after a change here
+    private static final int VERSION = 7;  // bump to rebuild the packs after a change here
 
     // the icon font's button glyphs
     private static final int G_A = 0xE000, G_B = 0xE001, G_X = 0xE002, G_Y = 0xE003, G_PLUS = 0xE045, G_MINUS = 0xE046,
@@ -159,10 +159,13 @@ final class ButtonStyle {
         int built = 0;
         for (File f : packs.values()) {
             try {
+                // the letters in the game's own text font (its glyphs, from this pack)
+                byte[] main = PackPatch.readInner(f, "CKingMain_bffnt.szs", "CKingMain.bffnt");
+                GameFont gf = main != null ? GameFont.load(main) : null;
                 Map<String, Map<String, PackPatch.Edit>> edits = new HashMap<>();
-                edits.computeIfAbsent("CKingPic_bffnt.szs", k -> new HashMap<>()).put("CKingPic.bffnt", font -> restyle(font, style, map));
+                edits.computeIfAbsent("CKingPic_bffnt.szs", k -> new HashMap<>()).put("CKingPic.bffnt", font -> restyle(font, style, map, gf));
                 if (!f.getName().contains("Jp")) {  // (the Japanese text uses those characters)
-                    edits.computeIfAbsent("CKingMain_bffnt.szs", k -> new HashMap<>()).put("CKingMain.bffnt", font -> hudFont(font, style, map));
+                    edits.computeIfAbsent("CKingMain_bffnt.szs", k -> new HashMap<>()).put("CKingMain.bffnt", font -> hudFont(font, style, map, gf));
                     for (String l : HUD_LAYOUTS)
                         edits.computeIfAbsent(l + ".szs", k -> new HashMap<>()).put("blyt/" + l + ".bflyt", ButtonStyle::hudLayout);
                     // the guide's letters as the game sets them: its messages
@@ -193,7 +196,7 @@ final class ButtonStyle {
     static boolean ready(File base) { return new File(dir(base), "stamp.txt").exists(); }
 
     // the icon font with the button glyphs redrawn; throws if it isn't the expected font
-    private static byte[] restyle(byte[] font, int style, int[] map) throws IOException {
+    private static byte[] restyle(byte[] font, int style, int[] map, GameFont gf) throws IOException {
         byte[] cells = Native.fontCells(font, GLYPHS);
         if (cells == null) throw new IOException("unexpected icon font");
         ByteBuffer h = ByteBuffer.wrap(cells, 0, 8).order(java.nio.ByteOrder.LITTLE_ENDIAN);
@@ -211,7 +214,7 @@ final class ButtonStyle {
             if (sym != null) {
                 erase(px, w, ht, GLYPHS[i] == G_STAR_A ? 130 : 200);
                 bm.setPixels(px, 0, w, 0, 0, w, ht);
-                draw(new Canvas(bm), sym, w, ht, GLYPHS[i] == G_STAR_A, GLYPHS[i] >= G_L && GLYPHS[i] <= G_ZR);
+                draw(new Canvas(bm), sym, w, ht, GLYPHS[i] == G_STAR_A, GLYPHS[i] >= G_L && GLYPHS[i] <= G_ZR, gf);
                 bm.getPixels(px, 0, w, 0, 0, w, ht);
             }
             for (int p = 0; p < px.length; p++) {
@@ -229,7 +232,7 @@ final class ButtonStyle {
 
     // the text font with the HUD guide's characters drawn as the buttons' symbols (white: the pane
     // colours them like the letters)
-    private static byte[] hudFont(byte[] font, int style, int[] map) throws IOException {
+    private static byte[] hudFont(byte[] font, int style, int[] map, GameFont gf) throws IOException {
         byte[] cells = Native.fontCells(font, HUD_CHARS);
         if (cells == null) throw new IOException("unexpected text font");
         ByteBuffer h = ByteBuffer.wrap(cells, 0, 8).order(java.nio.ByteOrder.LITTLE_ENDIAN);
@@ -239,7 +242,7 @@ final class ButtonStyle {
             String sym = symbol(style, keyFor(map, HUD_BUTTONS[i]));
             if (sym == null) sym = WIIU_NAMES[i];
             Bitmap bm = Bitmap.createBitmap(w, ht, Bitmap.Config.ARGB_8888);
-            hudGlyph(new Canvas(bm), sym, w, ht);
+            hudGlyph(new Canvas(bm), sym, w, ht, gf);
             int[] px = new int[w * ht];
             bm.getPixels(px, 0, w, 0, 0, w, ht);
             for (int p = 0; p < px.length; p++) {
@@ -256,7 +259,14 @@ final class ButtonStyle {
     private static final String[] WIIU_NAMES = {"A", "B", "X", "Y", "R", "ZR"};
 
     // a symbol in the text font's style: the shape covered fully, a rim around it half covered
-    private static void hudGlyph(Canvas c, String s, int w, int h) {
+    private static void hudGlyph(Canvas c, String s, int w, int h, GameFont gf) {
+        if (gf != null && gf.has(s)) {  // letters: the game's own glyphs, both tones as they are
+            Bitmap t = gf.text(s, false, 0);
+            float k = Math.min(1f, Math.min((float) w / t.getWidth(), (float) h / t.getHeight()));
+            float tw = t.getWidth() * k, th = t.getHeight() * k;
+            c.drawBitmap(t, null, new RectF((w - tw) / 2, (h - th) / 2, (w + tw) / 2, (h + th) / 2), new Paint(Paint.FILTER_BITMAP_FLAG));
+            return;
+        }
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         p.setStrokeCap(Paint.Cap.ROUND);
         p.setStrokeJoin(Paint.Join.ROUND);
@@ -399,7 +409,7 @@ final class ButtonStyle {
     private static int lum(int c) { return (((c >> 16) & 0xFF) * 3 + ((c >> 8) & 0xFF) * 6 + (c & 0xFF)) / 10; }
 
     // the new symbol over the cleaned glyph
-    private static void draw(Canvas c, String s, int w, int h, boolean star, boolean plate) {
+    private static void draw(Canvas c, String s, int w, int h, boolean star, boolean plate, GameFont gf) {
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         float cx = w / 2f, cy = h / 2f, u = Math.min(w, h);
         // on the action star: letters dark as the game's, PlayStation's shapes in their colours
@@ -459,6 +469,24 @@ final class ButtonStyle {
                 return;
             }
             default: {  // letters: the controller's colour (face buttons), dark grey (shoulders, sticks)
+                if (gf != null && gf.has(s)) {  // in the game's own text font
+                    boolean face = s.length() == 1 && !star;
+                    Bitmap t = gf.text(s, true, col);
+                    float boxH = u * (s.length() == 1 ? (star ? 0.44f : 0.46f) : plate ? 0.38f : 0.36f), boxW = u * (plate ? 0.6f : 0.5f);
+                    float k = Math.min(boxW / t.getWidth(), boxH / t.getHeight());
+                    float tw = t.getWidth() * k, th = t.getHeight() * k;
+                    RectF r = new RectF(cx - tw / 2, cy - th / 2, cx + tw / 2, cy + th / 2);
+                    if (face) {  // a dark rim so the colour reads on the white button
+                        Paint rim = new Paint(Paint.FILTER_BITMAP_FLAG);
+                        rim.setColorFilter(new android.graphics.PorterDuffColorFilter(0x99202020, android.graphics.PorterDuff.Mode.SRC_IN));
+                        float o = u * 0.025f;
+                        for (int dx = -1; dx <= 1; dx++)
+                            for (int dy = -1; dy <= 1; dy++)
+                                if (dx != 0 || dy != 0) c.drawBitmap(t, null, new RectF(r.left + dx * o, r.top + dy * o, r.right + dx * o, r.bottom + dy * o), rim);
+                    }
+                    c.drawBitmap(t, null, r, new Paint(Paint.FILTER_BITMAP_FLAG));
+                    return;
+                }
                 p.setTypeface(Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD));
                 p.setTextAlign(Paint.Align.CENTER);
                 float size = s.length() == 1 ? u * 0.5f : u * (plate ? 0.36f : 0.34f);
@@ -474,6 +502,71 @@ final class ButtonStyle {
                 p.setColor(col);
                 c.drawText(s, cx, y, p);
             }
+        }
+    }
+
+    /** The game's text font (CKingMain) as pictures of its glyphs, for writing labels in it. */
+    private static final class GameFont {
+        private final Map<Character, Bitmap> glyphs = new HashMap<>();  // trimmed to the glyph, alpha: coverage
+        private int h;
+
+        static GameFont load(byte[] font) {
+            String chars = "ABXYLRTSZ0123456789";
+            int[] codes = new int[chars.length()];
+            for (int i = 0; i < codes.length; i++) codes[i] = chars.charAt(i);
+            byte[] cells = Native.fontCells(font, codes);
+            if (cells == null) return null;
+            ByteBuffer hb = ByteBuffer.wrap(cells, 0, 8).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            int w = hb.getInt(), ht = hb.getInt(), size = w * ht * 4;
+            GameFont gf = new GameFont();
+            gf.h = ht;
+            for (int i = 0; i < codes.length; i++) {
+                int[] px = new int[w * ht];
+                int x0 = w, x1 = -1;
+                for (int p = 0; p < px.length; p++) {
+                    int a = cells[8 + i * size + p * 4 + 3] & 0xFF;
+                    px[p] = a << 24 | 0xFFFFFF;
+                    if (a > 8) { x0 = Math.min(x0, p % w); x1 = Math.max(x1, p % w); }
+                }
+                if (x1 < x0) continue;  // not in the font
+                Bitmap full = Bitmap.createBitmap(px, w, ht, Bitmap.Config.ARGB_8888);
+                gf.glyphs.put(chars.charAt(i), Bitmap.createBitmap(full, x0, 0, x1 - x0 + 1, ht));
+            }
+            return gf;
+        }
+
+        boolean has(String s) {
+            for (char ch : s.toCharArray()) if (!glyphs.containsKey(ch)) return false;
+            return !s.isEmpty();
+        }
+
+        /**
+         * `s` in the font, trimmed to its rows. fillOnly: the fully covered part only (the font's
+         * half-covered rim left out), in `color`; else both tones in white as the font has them.
+         */
+        Bitmap text(String s, boolean fillOnly, int color) {
+            int gap = Math.max(1, h / 30), width = 0;
+            for (char ch : s.toCharArray()) width += glyphs.get(ch).getWidth() + gap;
+            width -= gap;
+            Bitmap out = Bitmap.createBitmap(Math.max(1, width), h, Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(out);
+            int x = 0;
+            for (char ch : s.toCharArray()) {
+                Bitmap g = glyphs.get(ch);
+                c.drawBitmap(g, x, 0, null);
+                x += g.getWidth() + gap;
+            }
+            int[] px = new int[out.getWidth() * h];
+            out.getPixels(px, 0, out.getWidth(), 0, 0, out.getWidth(), h);
+            int y0 = h, y1 = -1;
+            for (int i = 0; i < px.length; i++) {
+                int a = px[i] >>> 24;
+                if (fillOnly) a = Math.max(0, Math.min(255, (a - 150) * 255 / 90));
+                px[i] = fillOnly ? a << 24 | (color & 0xFFFFFF) : px[i];
+                if ((px[i] >>> 24) > 8) { y0 = Math.min(y0, i / out.getWidth()); y1 = Math.max(y1, i / out.getWidth()); }
+            }
+            out.setPixels(px, 0, out.getWidth(), 0, 0, out.getWidth(), h);
+            return y1 < y0 ? out : Bitmap.createBitmap(out, 0, y0, out.getWidth(), y1 - y0 + 1);
         }
     }
 }

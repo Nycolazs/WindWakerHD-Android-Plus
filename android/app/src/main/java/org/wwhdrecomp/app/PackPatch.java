@@ -132,6 +132,22 @@ final class PackPatch {
         if (!tmp.renameTo(outFile)) throw new IOException("cannot write " + outFile);
     }
 
+    /** The file `inner` of the archive `entry` (a Yaz0 SARC) in a pack, or null. */
+    static byte[] readInner(File pack, String entry, String inner) throws IOException {
+        byte[] d = Files.readAllBytes(pack.toPath());
+        ByteBuffer b = ByteBuffer.wrap(d);
+        if (d.length < 0x20 || b.getInt(0) != 0x53415243) return null;
+        int data = b.getInt(12), n = b.getShort(0x1A) & 0xFFFF, names = 0x20 + 16 * n + 8;
+        for (int i = 0; i < n; i++) {
+            int node = 0x20 + 16 * i;
+            if (!name(d, names, b.getInt(node + 4)).equals(entry)) continue;
+            byte[] arc = yaz0(java.util.Arrays.copyOfRange(d, data + b.getInt(node + 8), data + b.getInt(node + 12)));
+            int[] at = find(arc, inner);
+            return at == null ? null : java.util.Arrays.copyOfRange(arc, at[0], at[1]);
+        }
+        return null;
+    }
+
     private static String name(byte[] d, int names, int attr) {
         int o = names + (attr & 0xFFFFFF) * 4, z = o;
         while (z < d.length && d[z] != 0) z++;
