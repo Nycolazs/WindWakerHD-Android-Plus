@@ -76,6 +76,18 @@ Get the latest APK from the **[Releases page](../../releases/latest)**.
   auto-rotate on when a game starts, so the game could show in a portrait strip. The app asks once
   for **"Modify system settings"** and then keeps the screen in landscape while you play (the side
   you hold the phone), giving your rotation settings back when you leave.
+- **Button icons: Wii U, Xbox or PlayStation** (**Mods → Button icons**): the touch controls and
+  the game itself (the HUD's button guide and the icons in its text, "Press A") show the symbols of
+  the controller you play with, in the game's own font, following the buttons you assigned (a
+  remapped button shows its own symbol). The game's icons change after a restart.
+- **From the original project (ZeldaWWHDRecomp)**:
+  - Frame pacing: a frame that misses its vsync is shown as soon as it is ready instead of a whole
+    vsync later, and the 60 fps step follows the display's own refresh.
+  - Faster recompiled game code (float compares, paired-single loads and stores): the game thread
+    takes 7% less time per frame.
+  - Minigame timers (letter sorting, auctions, boat race) no longer run twice as fast at 60 fps, Link
+    no longer flickers in conversations, and sails and flags move smoothly at 60 fps.
+- **60 fps (generated) steadier**: Link and the title's boat no longer shake back and forth.
 - **Recommended Turnip for Adreno 650** (Galaxy S20 FE, Snapdragon 865): see
   [Performance](#performance).
 
@@ -242,7 +254,7 @@ Open the settings with **≡** (or hold Select / press Home on a controller).
 | **Saves** | 5 save-state slots with pictures; import and export of your game saves; **automatic save backup** |
 | **Game** | Game language, **App language**, Menu size |
 | **Graphics** | Frame rate (30 / **60 generated** / 60 / 60 adaptive), CPU cores, rendering resolution, widescreen, screen layout, **HUD layout**, ambient occlusion, bloom, **distant shadows**, performance overlay, GPU driver, **GPU safe mode** |
-| **Mods** | **Portuguese translation**, cheats, direct camera, first person on R3, climb any wall, quick doors, fast scene changes, fast-forward cutscenes and dialogue, faster running and swimming |
+| **Mods** | **Portuguese translation**, cheats (with moon jump), **button icons (Wii U / Xbox / PlayStation)**, direct camera, first person on R3, climb any wall, quick doors, fast scene changes, fast-forward cutscenes and dialogue, faster running and swimming |
 | **Controls** | On-screen controls, **camera stick**, edit touch layout, camera speed, combat buttons, vibration, GamePad / Pro Controller mode, **motion controls**, rumble, controller buttons |
 
 ### Recommended settings
