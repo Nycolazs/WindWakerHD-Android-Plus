@@ -14,9 +14,11 @@
 // presses ("trigger" bits) are cleared for the extra steps, so a press is seen once.
 //
 // Fast scene changes: while an overlap (fade/wipe) process exists (l_fopOvlpM_overlap[0],
-// 101F36CC), the frame gets kSceneExtra more runs of the transition machinery only: process
-// creation (fpcCt_Handler: the new scene's loading phases), the overlap process's execute (its fade
-// timers) and fapGm_After (scene and overlap request phases). The scenes themselves (actors,
+// 101F36CC), the frame gets kSceneExtra more runs of the transition machinery only: the overlap
+// process's execute (its fade timers) and fapGm_After (scene and overlap request phases). Process
+// creation (fpcCt_Handler) stays once per frame: run in the extra steps too, the new scene's actors
+// were created ahead of the frames they normally get, and grandma kept her back to Link while
+// handing over the shield (issue #15). It made scene changes only ~3 frames shorter. The scenes themselves (actors,
 // events, cutscenes) keep running at normal speed, so no story event is shortened.
 //
 // Fast forward: while ZR is held during an event, the emulated display clock runs kFfRate times
@@ -290,7 +292,7 @@ void after_execute(Cpu* c, uint32_t execute_fn) {
     // fast scene changes: transition machinery only
     if (fast_scenes()) {
         for (int i = 0; i < kSceneExtra && overlap_active(); i++) {
-            call(c, f_025DDCEC_orig, 0);  // fpcCt_Handler: loading phases of the new scene
+            // (no fpcCt_Handler: process creation stays once per frame, see the top, issue #15)
             uint32_t ovl_req = ld32(kOverlap);
             uint32_t task = ovl_req ? ld32(ovl_req + kOvlpTask) : 0;
             if (task) call(c, f_025DF940, task);  // the overlap process: fade timers

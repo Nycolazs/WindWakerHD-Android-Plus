@@ -24,6 +24,7 @@
 #include "lsfg.h"
 #include "reproj.h"
 #include "platform.h"
+#include "interp.h"
 #include "runtime.h"
 #include "vk.h"
 #include "vk_window.h"
@@ -114,6 +115,7 @@ Upload upload(const void* data, VkDeviceSize size, VkDeviceSize align) {
     memcpy(u.ptr, data, size);
     return u;
 }
+
 
 VkDescriptorSet alloc_descriptor_set(VkDescriptorSetLayout layout) {
     for (int attempt = 0; attempt < 2; attempt++) {
@@ -712,7 +714,8 @@ static bool has_ext(const std::vector<VkExtensionProperties>& exts, const char* 
 }
 
 // one pipeline cache per driver (a user-installed GPU driver and the system's keep their own);
-// pipelines.vkcache is the name builds before that used
+// pipelines.vkcache and pipelines-*.vkcache are the names of builds before (the latter holds pipelines
+// of shaders translated before strictMul: not loaded, so they don't stay in the cache for good)
 static std::string pipeline_cache_path(bool legacy = false) {
     std::string dir = config::cache_dir.empty() ? "." : config::cache_dir;
     if (legacy) return dir + "/pipelines.vkcache";
@@ -724,15 +727,18 @@ static std::string pipeline_cache_path(bool legacy = false) {
     mix(&R.props.deviceID, 4);
     mix(R.props.pipelineCacheUUID, VK_UUID_SIZE);
     char name[40];
-    snprintf(name, sizeof name, "/pipelines-%08x.vkcache", h);
+    snprintf(name, sizeof name, "/pipelines2-%08x.vkcache", h);
     return dir + name;
+}
+static std::string pipeline_cache_path_v1() {
+    std::string p = pipeline_cache_path();
+    return p.replace(p.rfind("/pipelines2-"), 12, "/pipelines-");
 }
 
 static void load_pipeline_cache() {
     std::vector<uint8_t> data;
     if (const char* e = getenv("WWHD_SHADER_CACHE"); !(e && !strcmp(e, "0"))) {
         FILE* f = fopen(pipeline_cache_path().c_str(), "rb");
-        if (!f) f = fopen(pipeline_cache_path(true).c_str(), "rb");  // the header check below decides if it fits
         if (f) {
             fseek(f, 0, SEEK_END);
             long n = ftell(f);
@@ -780,7 +786,10 @@ void save_caches() {
     if (FILE* f = fopen(tmp.c_str(), "wb")) {
         bool ok = fwrite(data.data(), 1, n, f) == n;
         ok &= fclose(f) == 0;
-        if (ok && rename(tmp.c_str(), path.c_str()) == 0) remove(pipeline_cache_path(true).c_str());
+        if (ok && rename(tmp.c_str(), path.c_str()) == 0) {
+            remove(pipeline_cache_path(true).c_str());
+            remove(pipeline_cache_path_v1().c_str());
+        }
     }
 }
 
@@ -1163,13 +1172,43 @@ void request_window_frame_rate(ANativeWindow* window, float hz, int8_t compatibi
         r = ANativeWindow_setFrameRate(window, hz, compatibility);
     if (r) LOG("[vk] window frame-rate request %.1f Hz failed: %d", hz, r);
 }
-
-// g_window_mutex held; true if a swapchain is ready. `main`: the game window (frame generation
-// presents there); else the GamePad's own display
+// The display rate the window asks for, from the frames shown per second (30, or what frame
+// interpolation draws: interp::frames_per_step). Frame generation presents a steady multiple of it
+// (a 144 Hz panel can't space 60 or 120 fps evenly; 120 Hz can); without it at least 60 Hz, more for
+// interpolation at 120 fps. Checked every frame (the frame rate setting changes during play); Android
+// is asked only when it changes, or for a new window (force).
+static bool no_60hz_request() {
+    static const bool off = getenv("WWHD_NO_60HZ") != nullptr;
+    return off;
+}
 // frame generation: the LSFG network (lsfg.cpp, the user's Lossless.dll) or the built-in reprojection
 // (reproj.cpp, "60 fps (generated)"); both present through present_frame_fg and its present thread
 static bool gen_on() { return fg::loaded() || rp::enabled(); }
 static int gen_multiplier() { return rp::enabled() ? 2 : fg::config().multiplier; }
+static float g_rate_requested = -1.0f;
+static void request_display_rate(ANativeWindow* window, bool force) {
+    if (!window) return;
+    const int shown = 30 * interp::frames_per_step();
+    float rate;
+    int8_t compat = ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT;
+    if (gen_on()) {
+        // the built-in reprojection doubles the game's own 30 fps; LSFG multiplies what is drawn
+        rate = (float)((rp::enabled() ? 30 : shown) * gen_multiplier());
+        compat = ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE;
+    } else {
+        // without it the game flips at most 60 times a second (more with interpolation): let a 90/120 Hz
+        // panel drop to 60 Hz (from pull request #8 by SSunnKing, 62a723b); WWHD_NO_60HZ=1 leaves it alone
+        rate = no_60hz_request() ? 0.0f : (float)std::max(60, shown);
+        if (interp::mode40()) rate = 120.0f;  // 40 fps: a frame every 3 refreshes of a 120 Hz panel
+    }
+    if (!force && rate == g_rate_requested) return;
+    g_rate_requested = rate;
+    request_window_frame_rate(window, rate, compat);
+    LOG("[vk] display rate requested: %.0f Hz%s", rate, gen_on() ? " (frame generation)" : "");
+}
+
+// g_window_mutex held; true if a swapchain is ready. `main`: the game window (frame generation
+// presents there); else the GamePad's own display
 
 bool ensure_swapchain(Swapchain& sc, bool main = true) {
     if (!sc.window) return false;
@@ -1188,13 +1227,7 @@ bool ensure_swapchain(Swapchain& sc, bool main = true) {
         vkGetPhysicalDeviceSurfaceSupportKHR(R.pd, R.queueFamily, sc.surface, &ok);
         if (!ok) LOG("[vk] warning: queue family %u reports no present support", R.queueFamily);
     }
-    // frame generation presents at a steady multiple of the game's 30 fps: ask for a display mode
-    // that is a multiple of it (a 144 Hz panel can't space 60 or 120 fps evenly; 120 Hz can)
-    if (main && gen_on()) request_window_frame_rate(sc.window, 30.0f * gen_multiplier(),
-                                                        ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
-    // without it the game flips at most 60 times a second: let a 90/120 Hz panel drop to 60 Hz
-    // (40 fps: 120 Hz, a frame every 3 refreshes; present_frame follows a switch)
-    else request_window_frame_rate(sc.window, main && interp::mode40() ? 120.0f : 60.0f, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT);
+    if (main) request_display_rate(sc.window, true);
     VkSurfaceCapabilitiesKHR caps{};
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(R.pd, sc.surface, &caps);
     uint32_t n = 0;
@@ -1413,14 +1446,7 @@ bool present_frame() {
     std::lock_guard<std::mutex> wl(g_window_mutex);
     if (g_present_outdated.exchange(false, std::memory_order_acquire)) g_sc.stale = true;
     if (!ensure_swapchain(g_sc)) return false;
-    {  // the frame rate setting changed between 40 fps (120 Hz panel) and the others (60 Hz)
-        static bool asked40 = false;
-        bool want40 = interp::mode40();
-        if (want40 != asked40 && !gen_on()) {
-            request_window_frame_rate(g_sc.window, want40 ? 120.0f : 60.0f, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT);
-            asked40 = want40;
-        }
-    }
+    request_display_rate(g_sc.window, false);
     VkSemaphore acquire;
     if (!g_acquire_free.empty()) {
         acquire = g_acquire_free.back();
@@ -1853,8 +1879,7 @@ void apply_frame_generation() {
     else if (r.on) fg::load(r.cfg);  // logs why if the DLL can't be used
     // present mode (FIFO with frame generation) and the display rate hint differ: new swapchain
     std::lock_guard<std::mutex> wl(g_window_mutex);
-    if (g_sc.window && !gen_on())
-        request_window_frame_rate(g_sc.window, 60.0f, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT);
+    if (g_sc.window) request_display_rate(g_sc.window, true);
     g_sc.stale = true;
 }
 
@@ -1871,6 +1896,7 @@ bool present_frame_fg() {
         if (!g_sc.window) return false;
         w = (uint32_t)ANativeWindow_getWidth(g_sc.window);
         h = (uint32_t)ANativeWindow_getHeight(g_sc.window);
+        request_display_rate(g_sc.window, false);
     }
     if (!w || !h) return false;
     if (w != g_comp.img.width || h != g_comp.img.height) {
@@ -2404,6 +2430,7 @@ std::deque<VkFence> g_fw_pending;
 std::vector<VkFence> g_fw_free;
 
 void frame_waiter_thread() {
+    platform::set_thread_name("GX2 frame wait");
     for (;;) {
         VkFence f;
         {
@@ -2542,7 +2569,7 @@ void swap() {
     // the upstream ADPF session (platform.cpp) would compete with ours on the same threads
     // (android/perf_hint.cpp, game + render thread work); WWHD_UPSTREAM_PERF_HINT=1 uses it too
     static const bool upstreamHint = getenv("WWHD_UPSTREAM_PERF_HINT") != nullptr;
-    if (upstreamHint) platform::perf_hint_frame();
+    if (upstreamHint) platform::perf_hint_frame(interp::frames_per_step());
     prof_frame();
     latch_resolution_scale();
     apply_frame_generation();

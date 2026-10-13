@@ -67,17 +67,134 @@ final class CrashLogs {
         return out;
     }
 
-    /** After a crash: asks whether to share the newest log (once per log). */
-    static void offerNew(Activity a, SharedPreferences prefs) {
+    /**
+     * After a crash, before the game starts: asks whether to share the newest log (once per log).
+     * Returns true if it asked; `then` runs when the dialog closes (it starts the game).
+     */
+    static boolean offerNew(Activity a, SharedPreferences prefs, Runnable then) {
         List<File> logs = list(a, prefs);
-        if (logs.isEmpty()) return;
+        if (logs.isEmpty()) return false;
         File newest = logs.get(0);
-        if (newest.lastModified() <= prefs.getLong("crash_seen_ms", 0)) return;
+        if (newest.lastModified() <= prefs.getLong("crash_seen_ms", 0)) return false;
         prefs.edit().putLong("crash_seen_ms", newest.lastModified()).remove("crash_seen").apply();
-        new GameDialog(a).title(R.string.crash_title).message(R.string.crash_text)
-                .button(R.string.crash_not_now, null)
-                .button(R.string.crash_share, () -> share(a, prefs, logs.subList(0, 1)))
+        new GameDialog(a).title(R.string.crash_title).message(R.string.crash_text).cancelable(false)
+                .button(R.string.crash_start_game, then)
+                .button(R.string.crash_share, () -> {
+                    share(a, prefs, logs.subList(0, 1));
+                    then.run();
+                })
                 .show();
+        return true;
+    }
+
+    /**
+     * At start: if Android recorded that the last run ended unexpectedly while the game was in the
+     * foreground (a crash our crash handler can't catch, such as one in the GPU driver's process,
+     * running out of memory, or a watchdog), writes a log of it in the crash logs' place: the exit
+     * reason with Android's description, the memory the app used, Android's trace for a hang, the
+     * end of the previous run's log and the device context. Android 11 and newer.
+     */
+    static void recordExit(Activity a, SharedPreferences prefs) {
+        if (Build.VERSION.SDK_INT < 30) return;
+        try {
+            android.app.ActivityManager am = (android.app.ActivityManager) a.getSystemService(Context.ACTIVITY_SERVICE);
+            if (am == null) return;
+            List<android.app.ApplicationExitInfo> exits = am.getHistoricalProcessExitReasons(a.getPackageName(), 0, 5);
+            long seen = prefs.getLong("exit_seen_ms", 0);
+            android.app.ApplicationExitInfo e = null;
+            for (android.app.ApplicationExitInfo x : exits)
+                if (x.getTimestamp() > seen && (e == null || x.getTimestamp() > e.getTimestamp())) e = x;
+            if (e == null) return;
+            prefs.edit().putLong("exit_seen_ms", e.getTimestamp()).apply();
+            if (!unexpected(e)) return;
+            // our crash handler wrote a log for this one already
+            File[] own = dir(a).listFiles((d, n) -> isLogName(n));
+            if (own != null)
+                for (File f : own)
+                    if (Math.abs(f.lastModified() - e.getTimestamp()) < 120_000) return;
+            writeExitLog(a, prefs, e);
+        } catch (RuntimeException ignored) {
+            // no exit record (some vendors): nothing to report
+        }
+    }
+
+    // a real problem in the foreground: not our own quit (exit) or restart (killed in the background),
+    // not the user closing the app, not Android ending it in the background
+    private static boolean unexpected(android.app.ApplicationExitInfo e) {
+        if (e.getImportance() > android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_PERCEPTIBLE) return false;
+        switch (e.getReason()) {
+            case android.app.ApplicationExitInfo.REASON_CRASH:
+            case android.app.ApplicationExitInfo.REASON_CRASH_NATIVE:
+            case android.app.ApplicationExitInfo.REASON_ANR:
+            case android.app.ApplicationExitInfo.REASON_LOW_MEMORY:
+            case android.app.ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE:
+            case android.app.ApplicationExitInfo.REASON_INITIALIZATION_FAILURE:
+            case android.app.ApplicationExitInfo.REASON_SIGNALED:
+            case android.app.ApplicationExitInfo.REASON_OTHER:
+            case android.app.ApplicationExitInfo.REASON_UNKNOWN:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static final String[] REASONS = {"unknown", "exit (self)", "signaled", "low memory", "crash (Java)", "crash (native)", "not responding (ANR)",
+            "initialization failure", "permission change", "excessive resource use", "user requested", "user stopped", "dependency died", "other",
+            "freezer", "package state change", "package updated"};
+
+    private static void writeExitLog(Activity a, SharedPreferences prefs, android.app.ApplicationExitInfo e) {
+        StringBuilder s = new StringBuilder();
+        int r = e.getReason();
+        s.append("EXIT: ").append(r >= 0 && r < REASONS.length ? REASONS[r] : "reason " + r).append(" (status ").append(e.getStatus()).append(")\n");
+        s.append("  description: ").append(e.getDescription() != null ? e.getDescription() : "-").append('\n');
+        s.append("  when: ").append(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(new java.util.Date(e.getTimestamp())))
+                .append(", importance ").append(e.getImportance()).append(", PSS ").append(e.getPss() / 1024).append(" MB, RSS ")
+                .append(e.getRss() / 1024).append(" MB\n");
+        s.append("  [app]\n    ").append(appInfo(a, prefs).replace("\n", "\n    ")).append('\n');
+        if (r == android.app.ApplicationExitInfo.REASON_ANR) {
+            s.append("  [trace]\n");
+            try (java.io.InputStream in = e.getTraceInputStream()) {
+                if (in != null) s.append(text(in, 200_000));
+            } catch (java.io.IOException ignored) {
+            }
+        }
+        s.append("  [log of the previous run]\n").append(logcat("--pid=" + e.getPid(), 1500));
+        s.append("  [crash buffer]\n").append(logcat("-b crash", 200));
+        String when = new java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(new java.util.Date(e.getTimestamp()));
+        File f = new File(dir(a), "tlozwwhd_" + appVersion(a) + "_" + when + ".log");
+        //noinspection ResultOfMethodCallIgnored
+        f.getParentFile().mkdirs();
+        try (java.io.FileOutputStream out = new java.io.FileOutputStream(f)) {
+            out.write(s.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (java.io.IOException ignored) {
+        }
+    }
+
+    // the app's own log lines (Android lets an app read only those), the last `max`; paths cut to their last part
+    private static String logcat(String filter, int max) {
+        java.util.ArrayDeque<String> lines = new java.util.ArrayDeque<>();
+        try {
+            List<String> cmd = new ArrayList<>(Arrays.asList("logcat", "-d", "-v", "time"));
+            cmd.addAll(Arrays.asList(filter.split(" ")));
+            Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
+            try (java.io.BufferedReader rd = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream(),
+                    java.nio.charset.StandardCharsets.UTF_8))) {
+                for (String l; (l = rd.readLine()) != null; ) {
+                    lines.add("    " + l.replaceAll("(/[^\\s/:,;)\"']+)+/([^\\s/:,;)\"']+)", ".../$2"));
+                    if (lines.size() > max) lines.removeFirst();
+                }
+            }
+        } catch (java.io.IOException ex) {
+            lines.add("    logcat failed: " + ex.getMessage());
+        }
+        return String.join("\n", lines) + "\n";
+    }
+
+    private static String text(java.io.InputStream in, int max) throws java.io.IOException {
+        byte[] b = new byte[max];
+        int n = 0;
+        for (int k; n < max && (k = in.read(b, n, max - n)) > 0; ) n += k;
+        return new String(b, 0, n, java.nio.charset.StandardCharsets.UTF_8);
     }
 
     /** Android's share menu with these logs attached and the app and device in the text */
@@ -120,14 +237,16 @@ final class CrashLogs {
     }
 
     // settings that say nothing about a problem
-    private static final java.util.Set<String> SKIP = new java.util.HashSet<>(Arrays.asList("perf_x", "perf_y", "crash_seen", "crash_seen_ms", "crash_shared", "asked_notifications"));
+    private static final java.util.Set<String> SKIP = new java.util.HashSet<>(Arrays.asList("perf_x", "perf_y", "crash_seen", "crash_seen_ms", "crash_shared", "exit_seen_ms", "asked_notifications"));
 
     /**
      * The crash log's "app" section (runtime/src/crash_info.h): app version, Android, device, screen,
      * memory, controllers by USB IDs, and the settings. No personal data: no names, accounts or
      * paths (a setting holding a path or URI is left out).
      */
-    static void updateInfo(Activity a, SharedPreferences prefs) {
+    static void updateInfo(Activity a, SharedPreferences prefs) { Native.setCrashInfo("app", appInfo(a, prefs)); }
+
+    static String appInfo(Activity a, SharedPreferences prefs) {
         StringBuilder s = new StringBuilder();
         s.append(about(a)).append(", ").append(Build.SUPPORTED_ABIS.length > 0 ? Build.SUPPORTED_ABIS[0] : "?").append('\n');
         android.app.ActivityManager am = (android.app.ActivityManager) a.getSystemService(Context.ACTIVITY_SERVICE);
@@ -157,7 +276,7 @@ final class CrashLogs {
             set.append(' ').append(e.getKey()).append('=').append(v);
         }
         s.append(set);
-        Native.setCrashInfo("app", s.toString());
+        return s.toString();
     }
 
     // what a bug report needs besides the log (which names the GPU and driver): the app version and

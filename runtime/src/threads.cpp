@@ -601,6 +601,7 @@ static void* thread_main(void* p) {
     ht->self = pthread_self();
     ht->has_self = true;
     platform::set_thread_high_priority();
+    if (name.empty()) platform::prefer_big_cores(true);  // the game's main thread
     LOG("[thread] start \"%s\" core %d prio %d affinity %X", name.c_str(), ht->core, (int)ld32(ht->guest + osthread::kBasePrio),
         ld32(ht->guest + osthread::kAffinity));
     uint32_t rv = 0;

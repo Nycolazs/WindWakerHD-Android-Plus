@@ -18,6 +18,7 @@
 #include <sstream>
 
 #include "decode.h"
+#include "locals.h"
 #include "ppc.h"
 
 namespace recomp {
@@ -90,6 +91,10 @@ public:
         auto* entry = llvm::BasicBlock::Create(C, "entry", F);  // first: the function's entry block
         collect_labels();
         B.SetInsertPoint(entry);
+        // the ops work on the function's register copy; calls get the struct (locals.cpp)
+        auto* copy = B.CreateAlloca(llvm::ArrayType::get(i8, sizeof(Cpu)), nullptr, kLocalCpuName);
+        copy->setAlignment(llvm::Align(16));
+        regs = copy;
         call_op("enter", 0, start);
         for (uint32_t a = start; a < end; a += 4) {
             auto it = blocks.find(a);
@@ -127,7 +132,8 @@ private:
     llvm::FunctionType* fnTy;
     llvm::Type *i8, *i32;
     llvm::Function* F = nullptr;
-    llvm::Value* c = nullptr;
+    llvm::Value* c = nullptr;     // the Cpu struct: passed to calls
+    llvm::Value* regs = nullptr;  // the registers the ops and branches use: the function's copy
     uint32_t cur = 0, end = 0;
     std::map<uint32_t, llvm::BasicBlock*> blocks;
     std::set<uint32_t> loopHeads;
@@ -148,7 +154,7 @@ private:
     std::string import_name(uint32_t slot) { return import_symbol(P.imports.at(slot)); }
 
     // ---- Cpu fields
-    llvm::Value* field(size_t off) { return B.CreateConstInBoundsGEP1_64(i8, c, off); }
+    llvm::Value* field(size_t off) { return B.CreateConstInBoundsGEP1_64(i8, regs, off); }
     llvm::Value* load32(size_t off) { return B.CreateLoad(i32, field(off)); }
     void store32(size_t off, llvm::Value* v) { B.CreateStore(v, field(off)); }
     void store32(size_t off, uint32_t v) { store32(off, B.getInt32(v)); }
@@ -157,7 +163,7 @@ private:
     // ---- calls
     void call_op(const char* name, uint32_t w, uint32_t addr) {
         llvm::Function* f = M.getFunction(std::string("ppcop_") + name);
-        B.CreateCall(f, {c, B.getInt32(w), B.getInt32(addr)});
+        B.CreateCall(f, {regs, B.getInt32(w), B.getInt32(addr)});
     }
     void call_unimplemented(uint32_t addr, uint32_t w) { call_op("unimplemented", w, addr); }
     void tail(llvm::Function* f) {
@@ -291,6 +297,22 @@ private:
         B.SetInsertPoint(after);
     }
 
+    // lmw/stmw (function prologues and epilogues) as one lwz/stw per register: the same accesses, and
+    // each register a constant (locals.cpp keeps them apart; the op's loop indexes the registers).
+    // Not where lmw loads its own base register (an invalid form) or an offset leaves 16 bits.
+    bool split_multiple(uint32_t w, uint32_t a) {
+        uint32_t op = w >> 26, rd = (w >> 21) & 31, ra = (w >> 16) & 31;
+        int32_t d = sext(w & 0xFFFF, 16);
+        if (op != 46 && op != 47) return false;
+        if (op == 46 && ra != 0 && ra >= rd) return false;
+        if (d + 4 * (31 - (int32_t)rd) > 0x7FFF) return false;
+        for (uint32_t r = rd; r < 32; r++) {
+            uint32_t one = (op == 46 ? 32u : 36u) << 26 | r << 21 | ra << 16 | ((uint32_t)(d + 4 * (int32_t)(r - rd)) & 0xFFFF);
+            call_op(op == 46 ? "lwz" : "stw", one, a);
+        }
+        return true;
+    }
+
     void instruction(uint32_t a, uint32_t w) {
         Decoded d = decode(w);
         uint32_t bo = (w >> 21) & 31, bi = (w >> 16) & 31;
@@ -298,6 +320,7 @@ private:
         case Kind::Op: {
             auto ov = P.immOverride.find(a);  // relocated immediate of a data import
             if (ov != P.immOverride.end()) w = (w & 0xFFFF0000u) | ov->second;
+            else if (split_multiple(w, a)) return;
             call_op(d.op, w, a);
             return;
         }

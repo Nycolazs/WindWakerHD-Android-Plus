@@ -57,6 +57,7 @@ struct Surface {
     uint64_t contentHash = 0;  // hash of guest data at last upload
     uint64_t lastCheckedFrame = ~0ull;
     uint64_t sparseHash = 0;   // cheap per-frame change check (a few hundred samples)
+    uint32_t checkGen = 0;     // write tracking (mem_writes.h) when the contents were last compared
     uint32_t dataSize = 0;     // base level size in guest memory
     bool dirty = true;         // new, or invalidated by the game: do a full check
     FormatInfo fmt;

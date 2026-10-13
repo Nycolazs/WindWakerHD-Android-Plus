@@ -149,6 +149,7 @@
     <string name="fg_multiplier">Multiplier: ×%1$d (%2$d fps)</string>
     <string name="fg_multiplier_title">Frames per game frame</string>
     <string name="fg_multiplier_item">×%1$d (%2$d fps)</string>
+    <string name="fg_multiplier_item_over">×%1$d (%2$d fps: more than the display shows, no generated frames)</string>
     <string name="fg_mode">Network: %1$s</string>
     <string name="fg_performance">Performance</string>
     <string name="fg_quality">Quality (more GPU load)</string>
@@ -216,15 +217,16 @@
     <string name="opt_pad_hint">Controller: hold Select or press Home to open and close · L / R switch tabs · D-pad moves and changes values · right button selects · bottom button goes back</string>
     <string name="lang_restart">The new language takes effect when the game restarts. Progress since your last save is lost.</string>
     <string name="opt_fps">Frame rate</string>
-    <string name="opt_fps_hint">60 fps (generated): the game runs at its own 30 and every other frame is made on the GPU from the last one (smooth on most phones; the HUD and the screen edges may show small artifacts). 60 fps draws every frame and needs a fast phone. Adaptive switches to a steady 30 when the device can\'t hold 60, then retries automatically.</string>
+    <string name="opt_fps_hint">60 fps (generated): the game runs at its own 30 and every other frame is made on the GPU from the last one (smooth on most phones; the HUD and the screen edges may show small artifacts). 60 and 120 fps interpolate frames on the CPU and need a fast phone; where a frame doesn\'t fit in time it is left out and the game keeps its speed</string>
     <string-array name="fps_modes">
         <item>30 fps</item>
         <item>60 fps</item>
-        <item>60 fps (adaptive)</item>
+        <item>60 fps</item>
         <item>True 60 (experimental)</item>
     </string-array>
     <string name="fps_40">40 fps (120 Hz screen)</string>
     <string name="fps_generated">60 fps (generated)</string>
+    <string name="fps_120">120 fps (120 Hz screen)</string>
     <string name="opt_layout_edit">Edit touch layout</string>
     <string name="opt_layout_edit_hint">Move and resize every control on a grid (also the ✎ button next to ≡)</string>
     <string name="layout_edit_hint">Drag to move · corner handle or pinch to resize · 🗑 removes the selected control · + puts removed ones back · Back cancels</string>
@@ -286,6 +288,8 @@
     <string name="opt_ao">Ambient occlusion</string>
     <string name="opt_bloom">Bloom strength</string>
     <string name="opt_bloom_hint">Glow around bright areas. 100% matches the original game</string>
+    <string name="opt_area_blur">Console-accurate blur</string>
+    <string name="opt_area_blur_hint">Above 1x resolution: removes the fine grid in shadows and around objects on the ground. Costs GPU time</string>
     <string name="opt_ao_hires">Full-size occlusion depth</string>
     <string name="opt_aniso">16× anisotropic filtering</string>
     <string name="opt_distant_shadows">Distant shadows</string>
@@ -340,6 +344,18 @@
     <string name="opt_language">Game language</string>
     <string name="opt_language_hint">The languages of your copy of the game; applies after a restart</string>
     <string name="language_restart">The game uses the new language after a restart.</string>
+    <string name="opt_interp">Frame rate</string>
+    <string name="opt_interp_hint">Frame interpolation: in-between frames from the game\'s 30 fps. Needs a fast CPU; where a frame doesn\'t fit in time it is left out and the game keeps its speed</string>
+    <string name="interp_off">30 fps (original)</string>
+    <string name="interp_fps">%d fps (interpolated)</string>
+    <string name="opt_record_thread">Command recording thread</string>
+    <string name="opt_record_thread_hint">A second CPU thread prepares the GPU work: faster on most devices, slower on some (e.g. Snapdragon 855)</string>
+    <string-array name="record_thread_modes">
+        <item>Automatic</item>
+        <item>On</item>
+        <item>Off</item>
+    </string-array>
+    <string name="record_thread_restart">The setting applies after a restart.</string>
     <string name="opt_motion">Motion controls</string>
     <string name="opt_motion_hint">Aim by tilting the device, or a controller with motion sensors</string>
     <string name="opt_rumble">Rumble</string>
@@ -401,6 +417,7 @@
     <string name="crash_share">Share crash log</string>
     <string name="crash_share_all">Share crash logs</string>
     <string name="crash_not_now">Not now</string>
+    <string name="crash_start_game">Start game</string>
     <string name="crash_subject">Wind Waker HD crash log</string>
     <string name="opt_quit">Quit</string>
     <string name="menu_capture">Capture frame (debugging)</string>

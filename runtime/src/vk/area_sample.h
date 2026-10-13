@@ -4,7 +4,9 @@
 // apart. At the console's size they cover five texels and the occlusion pass's 4x4 noise averages
 // out; on a target scaled by the internal resolution the pixels between the taps get no weight and
 // a fine grid shows around everything standing on the ground. Each tap of these two shaders averages
-// ceil(scale)^2 bilinear samples over one guest texel instead; at scale 1 it is the game's one sample.
+// bilinear samples spread over one guest texel instead, each sample covering about 2x2 image texels:
+// n = max(2, ceil(scale / 2)) per axis above 1x (4 reads at 2x-4x; the original project's ceil(scale)^2
+// was 9 at 3x and cost a lot of GPU time). At scale 1 it is the game's one sample.
 #pragma once
 #include <bit>
 #include <cstdint>
@@ -57,8 +59,8 @@ inline int rewrite(std::string& src, uint32_t units) {
     static const char* const kGlsl =
         "// area-sampled tap for upscaled render targets (runtime/src/vk/area_sample.h)\n"
         "vec4 wwhdAreaSample(sampler2D t, vec2 scale, vec2 uv) {\n"
-        "    vec2 k = ceil(scale - 0.001);\n"
-        "    if (k.x <= 1.0 && k.y <= 1.0) return texture(t, uv);\n"
+        "    if (scale.x <= 1.001 && scale.y <= 1.001) return texture(t, uv);\n"
+        "    vec2 k = max(ceil(scale * 0.5 - 0.001), vec2(2.0));\n"
         "    vec2 step = scale / (vec2(textureSize(t, 0)) * k);\n"
         "    vec4 sum = vec4(0.0);\n"
         "    for (float j = 0.5; j < k.y; j += 1.0)\n"

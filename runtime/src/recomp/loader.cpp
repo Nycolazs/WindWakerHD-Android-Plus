@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -29,6 +30,7 @@
 #include "../disc/crypto.h"
 #include "../release.h"
 #include "compile.h"
+#include "locals.h"
 #include "emit.h"
 #include "program.h"
 #include "recomp_table.h"
@@ -138,7 +140,7 @@ std::string code_cache_key(const std::string& rpxPath) {
     disc::sha1((const uint8_t*)rpx.data(), rpx.size(), h);
     disc::sha1((const uint8_t*)wwhd_hooks, (size_t)(wwhd_hooks_end - wwhd_hooks), hk);
     std::string key = std::string("recompiler ") + WWHD_RECOMP_VERSION + "\nhooks " + hex(hk, 20) + "\nrpx " + hex(h, 20) + "\ncpu " +
-                      host_features() + "\nopt " + std::to_string(kDefaultOptLevel) + "\n";
+                      host_features() + "\nopt " + std::to_string(kDefaultOptLevel) + "\n" + code_switches() + "\n";
     // another release: its address map decides the function names
     uint32_t entry = rpx.size() >= 0x1C ? (uint8_t)rpx[0x18] << 24 | (uint8_t)rpx[0x19] << 16 | (uint8_t)rpx[0x1A] << 8 | (uint8_t)rpx[0x1B] : 0;
     if (release::known_entry(entry) && entry != kSupportedEntryPoint) {

@@ -19,6 +19,7 @@
 #include "../crash_info.h"
 #include "../gx2/gx2.h"
 #include "../input.h"
+#include "../interp.h"
 #include "../mods/climb.h"
 #include "../mods/mods.h"
 #include "../motion.h"
@@ -39,6 +40,8 @@ namespace gfx {
 int ao_mode();
 void set_ao_mode(int m);
 int bloom_strength();
+bool area_blur();
+void set_area_blur(bool on);
 void set_bloom_strength(int pct);
 bool aniso_enabled();
 void set_aniso(bool v);
@@ -270,6 +273,7 @@ JNI_FN(jbyteArray, parseKey)(JNIEnv* env, jclass, jbyteArray data) {
 #include <sys/sysinfo.h>
 
 #include "../recomp/compile.h"
+#include "../recomp/locals.h"
 extern "C" const char wwhd_ops_bc[], wwhd_ops_bc_end[], wwhd_hooks[], wwhd_hooks_end[];  // recomp_data.S
 
 #ifdef WWHD_DEVICE_RECOMP
@@ -317,8 +321,9 @@ static std::string compile_code(const std::string& gameDir, const std::string& o
     progress.join();
     struct rusage ru;
     getrusage(RUSAGE_SELF, &ru);
-    LOG("[recomp] %s: %zu functions, %zu modules, %zu instructions in %.1f s, peak memory %ld MB%s%s", ok ? "done" : "FAILED",
-        res.functions, res.modules, res.instructions, res.seconds, ru.ru_maxrss / 1024, ok ? "" : ": ", ok ? "" : err.c_str());
+    LOG("[recomp] %s: %zu functions, %zu modules, %zu instructions in %.1f s, peak memory %ld MB; registers in locals: %zu "
+        "functions, %zu kept in the struct (%s)%s%s", ok ? "done" : "FAILED", res.functions, res.modules, res.instructions, res.seconds,
+        ru.ru_maxrss / 1024, res.localized, res.localFallback, recomp::code_switches().c_str(), ok ? "" : ": ", ok ? "" : err.c_str());
     return ok ? "" : err.empty() ? "failed" : err;
 }
 #endif
@@ -489,6 +494,7 @@ JNI_FN(void, setOption)(JNIEnv* env, jclass, jstring name, jint value) {
     if (n != "capture") crash_info::option(n, value);
     if (n == "ao_mode") gfx::set_ao_mode(value);
     else if (n == "bloom_strength") gfx::set_bloom_strength(value);
+    else if (n == "area_blur") gfx::set_area_blur(value != 0);
     else if (n == "ao_hires") gfx::set_ao_hires(value != 0);
     else if (n == "aniso") gfx::set_aniso(value != 0);
     else if (n == "distant_shadows") gfx::set_distant_shadows(value != 0);
@@ -536,6 +542,7 @@ JNI_FN(jint, getOption)(JNIEnv* env, jclass, jstring name) {
     std::string n = jstr(env, name);
     if (n == "ao_mode") return gfx::ao_mode();
     if (n == "bloom_strength") return gfx::bloom_strength();
+    if (n == "area_blur") return gfx::area_blur();
     if (n == "ao_hires") return gfx::ao_hires_enabled();
     if (n == "aniso") return gfx::aniso_enabled();
     if (n == "distant_shadows") return gfx::distant_shadows();
@@ -545,6 +552,7 @@ JNI_FN(jint, getOption)(JNIEnv* env, jclass, jstring name) {
     if (n == "fps_mode") return fps60::mode();
     if (n == "drawdone_mode") return gx2::drawdone_mode();
     if (n == "core_mode") return platform::core_mode();
+    if (n == "interp_fps") return interp::mode() == 1 ? interp::fps() : 0;
     if (n == "mod_direct_camera") return mods::direct_camera();
     if (n == "mod_camera_speed") return (int)lroundf(mods::camera_speed() * 100);
     if (n == "mod_first_person") return mods::first_person_wheel();
