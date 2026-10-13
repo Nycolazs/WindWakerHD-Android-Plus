@@ -34,6 +34,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "countdown.h"
+#include "interp_nodraw.h"
 #include "interp_pacing.h"
 #include "guest_addr.h"
 #include <ctime>
@@ -632,6 +634,7 @@ void blend_mtx(const float* a, const float* b, float* out, float t) {
     }
 }
 }  // namespace
+void blend_world_matrix(const float* a, const float* b, float* out, float t) { blend_mtx(a, b, out, t); }
 }  // namespace interp
 
 // J3DModel::viewCalc(J3DModel*)
@@ -747,7 +750,9 @@ void fx_pass_start();          // interp_fx.cpp: puts back the values drawn blen
 void fx_hold_blend(float t);   // interp_fx.cpp: blended hold pass: logic-time effect blends at t
 void fx_ss_reset();
 // a save state was loaded: nothing may blend across the jump
+void nodraw_reset();          // fopAc_Draw hook: the step's one-shot no-draw requests
 void ss_reset() {
+    countdown::reset();
     for (auto& p : g_prev) p = Prev{};
     g_last_step = 0;
     g_models.clear();
@@ -761,6 +766,7 @@ void ss_reset() {
     g_phase = 0;
     g_step_n = 1;
     fx_ss_reset();
+    nodraw_reset();
     true60::ss_reset();
 }
 // Paced interpolation (WWHD_INTERP_PACED=1, the default on Android and at 120/240 fps): an
@@ -1361,7 +1367,29 @@ extern "C" void hook_0200E6EC(Cpu* c) { if (!skip(32)) f_0200E6EC_orig(c); }
 // #64, #74; #73, no control after an item-get message, looks like the same). Once per logic step, as
 // at 30 fps (true 60 too: these screens are 30 Hz logic).
 extern "C" void f_02715310_orig(Cpu* c);
-extern "C" void hook_02715310(Cpu* c) { if (!skip(64)) f_02715310_orig(c); }
+// (an in-between pass: the minigame countdowns' text is refreshed between steps, countdown.cpp)
+extern "C" void hook_02715310(Cpu* c) {
+    if (!skip(64)) f_02715310_orig(c);
+    else countdown::refresh(c);
+}
+
+// fopAc_Draw(fopAc_ac_c*): one-shot "not drawn this frame" requests (fopAcStts_NODRAW_e) made by
+// the step's logic hold for all passes of the step (interp_nodraw.h; from ZeldaWWHDRecomp, issue
+// #126: in conversations the talk camera hides Link on logic frames only, so he flickered with frame
+// interpolation and true 60). debug: WWHD_INTERP_NODRAW=0 turns this off
+extern "C" void f_025D4654_orig(Cpu* c);
+static interp::OneShotNoDraw g_nodraw;
+extern "C" void hook_025D4654(Cpu* c) {
+    static const bool off = getenv("WWHD_INTERP_NODRAW") && !atoi(getenv("WWHD_INTERP_NODRAW"));
+    if (interp::enabled() && !off) {
+        const uint32_t actor = c->r[3];
+        const uint32_t status = ld32(actor + interp::OneShotNoDraw::kStatus);
+        const uint32_t want = g_nodraw.on_draw(actor, status, interp::g_hold, interp::g_logic_steps);
+        if (want != status) st32(actor + interp::OneShotNoDraw::kStatus, want);
+    }
+    f_025D4654_orig(c);
+}
+namespace interp { void nodraw_reset() { g_nodraw.reset(); } }
 
 namespace interp {
 // The pads are read at the end of every frame. JUTGamePad derives "pressed this frame" from
