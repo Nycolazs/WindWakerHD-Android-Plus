@@ -86,6 +86,9 @@ void f_027F5018_orig(Cpu* c);  // J3DModel UBO update
 
 }
 
+#ifdef __ANDROID__
+namespace gx2 { int64_t vsync_period_ns(); }  // gx2_core.cpp: one virtual vsync (locked to the display)
+#endif
 namespace true60_test { inline void logic_step(uint64_t) {} }  // upstream's test traces (true60_test.cpp): not in this port
 
 namespace interp {
@@ -879,6 +882,13 @@ static void step_timed(pace_clock::duration step) {
 static const int g_pace_trace_n = getenv("WWHD_PACE_TRACE") ? atoi(getenv("WWHD_PACE_TRACE")) : 0;
 static int g_pace_trace = 0;
 static double ms(pace_clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); }
+static int64_t paced_vsync_ns() {
+#ifdef __ANDROID__
+    return ::gx2::vsync_period_ns();
+#else
+    return 16'683'333;
+#endif
+}
 static void paced_pass_start() {
     static bool previousRecord = false;
     if (!paced() || !interp_on()) { g_exact_step = false; previousRecord = false; return; }
@@ -909,9 +919,19 @@ static void paced_pass_start() {
         if (in_between() == 1) step_timed(step);
     }
     g_step_drew = false;
-    if (g_wait_step && now < g_last_logic + kPacedStep) {
-        threads::park_sleep_until(g_last_logic + kPacedStep);  // the game keeps 30 steps a second
+    // a step: two virtual vsyncs (the game's swap interval), on the clock the flips follow (it is
+    // locked to the display): a fixed 33.333 ms drifted against it (ZeldaWWHDRecomp, issue #164)
+    const auto step = std::chrono::nanoseconds(2 * paced_vsync_ns());
+    if (g_wait_step && now < g_last_logic + step) {
+        const auto due = g_last_logic + step;
+        threads::park_sleep_until(due);  // the game keeps 30 steps a second
         g_slept = pace_clock::now() - now;
+        // the step starts at its time, not when the sleep timer woke up (0.2-1 ms later): counted
+        // from the wake-up every waited step was that much longer (ZeldaWWHDRecomp, issue #125)
+        if (g_pace_trace > 0) LOG("[pace] logic pass waited %.1f ms for its time", ms(g_slept));
+        g_wait_step = false;
+        g_last_logic = due;
+        return;
     }
     if (g_pace_trace > 0)
         LOG("[pace] logic pass starts %.1f ms after the last one (slept %.1f)", ms(pace_clock::now() - g_last_logic), ms(g_slept));

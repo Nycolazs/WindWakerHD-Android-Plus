@@ -540,6 +540,11 @@ void gx2_display_vsync(int64_t vsync_ns, int64_t display_period) {
 }
 
 namespace gx2 {
+// one virtual vsync (ns): 59.94 Hz, or the display's refresh when the clock is locked to it
+int64_t vsync_period_ns() {
+    std::lock_guard<std::mutex> lk(g_vclock_mutex);
+    return vclock_period();
+}
 void set_clock_rate(double rate) {
     std::lock_guard<std::mutex> lk(g_vclock_mutex);
     if (rate == g_vclock_rate) return;
@@ -550,12 +555,21 @@ void set_clock_rate(double rate) {
 }
 }  // namespace gx2
 
+// WWHD_LATE_FLIP_WAIT=0: the old fixed grid (a late frame waits for the next vsync)
+static bool late_flips() {
+    static const bool on = !getenv("WWHD_LATE_FLIP_WAIT") || atoi(getenv("WWHD_LATE_FLIP_WAIT")) != 0;
+    return on;
+}
 static void update_flips() {  // g_flip_mutex held
     uint64_t now = vsync_index();
     while (!g_pending_flips.empty()) {
         PendingFlip& pf = g_pending_flips.front();
         uint64_t ideal = g_last_flip_vsync + interp::effective_swap_interval(g_swap_interval);
-        uint64_t at = std::max(pf.vsync + 1, ideal);
+        // `swap interval` vsyncs after the previous flip. A frame swapped after that vsync (it missed
+        // it) flips as soon as it is ready instead of on the next vsync (from ZeldaWWHDRecomp, issue
+        // #125: a fixed grid made a frame that is a little late cost a whole vsync, so a device that
+        // draws ~55 frames a second got 30); one ready on time flips on its vsync as before
+        uint64_t at = late_flips() ? ideal : std::max(pf.vsync + 1, ideal);
         if (at > now) break;
         if (gfx::frames_completed() < pf.swap) {  // could flip now, but the frame isn't done
             if (gfx::frames_submitted() < pf.swap) pf.waitedRender = 1;
@@ -840,7 +854,40 @@ HLE(gx2, GX2GetSwapStatus) {
     if (arg(c, 3)) st64(arg(c, 3), timebase::guest_now());
 }
 HLE(gx2, GX2SetSwapInterval) { g_swap_interval = std::max<uint32>(arg(c, 0), 1); }
+// A flip whose vsync has come but whose frame isn't ready yet: GX2WaitForVsync waits for that frame
+// in short steps instead of sleeping to the next vsync, and returns once the flip has executed
+// (ZeldaWWHDRecomp, issue #125). False: no such flip (or the deadline came first).
+static bool wait_for_late_flip(std::chrono::steady_clock::time_point deadline) {
+    auto overdue = [] {  // g_flip_mutex held
+        return !g_pending_flips.empty() && g_last_flip_vsync + interp::effective_swap_interval(g_swap_interval) <= vsync_index() &&
+               gfx::frames_completed() < g_pending_flips.front().swap;
+    };
+    uint64_t flips;
+    {
+        std::lock_guard<std::mutex> lk(g_flip_mutex);
+        flips = g_flip_count;
+        update_flips();
+        if (g_flip_count != flips) return true;
+        if (!overdue()) return false;
+    }
+    constexpr auto kStep = std::chrono::microseconds(250);
+    for (auto now = std::chrono::steady_clock::now(); now < deadline; now = std::chrono::steady_clock::now()) {
+        threads::park_sleep_until(std::min(deadline, now + kStep));
+        std::lock_guard<std::mutex> lk(g_flip_mutex);
+        update_flips();
+        if (g_flip_count != flips) return true;
+        if (!overdue()) return false;
+    }
+    return false;
+}
+
 HLE(gx2, GX2WaitForVsync) {
+    if (late_flips() && !pace_buffered() && wait_for_late_flip(next_vsync_time())) {
+        std::lock_guard<std::mutex> lk(g_flip_mutex);
+        g_pass_vsync = vsync_index();
+        g_pass_borrowed = false;
+        return;
+    }
     if (pace_buffered()) {
         std::lock_guard<std::mutex> lk(g_flip_mutex);
         update_flips();
