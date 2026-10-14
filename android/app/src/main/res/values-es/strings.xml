@@ -24,7 +24,7 @@
     <string name="ptbr_about">Juega el juego con la traducción al portugués de Brasil de Triforce-Heroes (triforce-heroes.com.br). La traducción reemplaza el texto en inglés, así que activarla pone el idioma del juego en inglés. Si no está instalada, elige su carpeta (la versión de Cemu o la de consola, la carpeta con rules.txt).</string>
     <string name="ptbr_install">Instalar la traducción…</string>
     <string name="ptbr_install_hint">Elige la carpeta de la traducción</string>
-    <string name="ptbr_install_other">Instalar otra versión…</string>
+    <string name="ptbr_install_other">Instalar otra traducción (cualquier idioma)…</string>
     <string name="ptbr_installed">Instalada: %1$s</string>
     <string name="ptbr_toggle_hint">Se aplica tras reiniciar</string>
     <string name="ptbr_remove">Quitar la traducción</string>

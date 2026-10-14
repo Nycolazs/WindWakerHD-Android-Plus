@@ -38,7 +38,7 @@
     <string name="ptbr_about">Joga com a tradução de fãs para português brasileiro feita pela Triforce-Heroes (triforce-heroes.com.br). A tradução substitui o texto em inglês, então ativá-la muda o idioma do jogo para inglês. Se ela não estiver instalada, escolha a pasta dela (a versão para Cemu ou para console, a pasta com o rules.txt).</string>
     <string name="ptbr_install">Instalar a tradução…</string>
     <string name="ptbr_install_hint">Escolha a pasta da tradução</string>
-    <string name="ptbr_install_other">Instalar outra versão…</string>
+    <string name="ptbr_install_other">Instalar outra tradução (qualquer idioma)…</string>
     <string name="ptbr_installed">Instalada: %1$s</string>
     <string name="ptbr_toggle_hint">Vale após reiniciar</string>
     <string name="ptbr_remove">Remover a tradução</string>

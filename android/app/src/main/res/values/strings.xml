@@ -24,7 +24,7 @@
     <string name="ptbr_about">Plays the game with the Brazilian Portuguese fan translation by Triforce-Heroes (triforce-heroes.com.br). The translation replaces the English text, so turning it on sets the game language to English. If it isn\'t installed, choose its folder (the Cemu version or the console version, the folder with rules.txt).</string>
     <string name="ptbr_install">Install the translation…</string>
     <string name="ptbr_install_hint">Choose the translation\'s folder</string>
-    <string name="ptbr_install_other">Install another version…</string>
+    <string name="ptbr_install_other">Install another translation (any language)…</string>
     <string name="ptbr_installed">Installed: %1$s</string>
     <string name="ptbr_toggle_hint">Applies after a restart</string>
     <string name="ptbr_remove">Remove the translation</string>

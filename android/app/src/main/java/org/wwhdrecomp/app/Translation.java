@@ -79,6 +79,12 @@ final class Translation {
             Backup.deleteTree(tmp);
             return c.getString(R.string.ptbr_not_found);
         }
+        // installed by the user (any language): the built-in Portuguese one doesn't replace it
+        try {
+            //noinspection ResultOfMethodCallIgnored
+            new File(tmp, USER_MARK).createNewFile();
+        } catch (IOException ignored) {
+        }
         try (OutputStream o = new FileOutputStream(new File(tmp, "label.txt"))) {
             o.write(label[0].getBytes(java.nio.charset.StandardCharsets.UTF_8));
         } catch (IOException ignored) {
@@ -95,6 +101,9 @@ final class Translation {
     // changed font glyphs only, nothing of the game. Built into files/mods/ptbr on the first start,
     // again when the patch changes (its CRC in label.txt).
     static final String PATCH_ASSET = "ptbr/patch.bin", LABEL_ASSET = "ptbr/label.txt";
+    // in a translation the user installed from a folder (Korean, say): kept, the built-in one never
+    // replaces it (until it is removed)
+    static final String USER_MARK = "user_installed";
     static final String[] ENGLISH_PACKS = {"permanent_2d_UsEnglish.pack", "permanent_2d_EuEnglish.pack"};
 
     /** null when the translation is ready (built now or before), else why not */
@@ -110,7 +119,7 @@ final class Translation {
         java.util.zip.CRC32 crc = new java.util.zip.CRC32();
         crc.update(patch);
         String stamp = label + "\n" + Long.toHexString(crc.getValue());
-        if (installed(dir) && stamp.equals(rawLabel(dir))) return null;
+        if (installed(dir) && (stamp.equals(rawLabel(dir)) || new File(dir, USER_MARK).exists())) return null;
         File tmp = new File(dir.getParentFile(), "ptbr.part");
         Backup.deleteTree(tmp);
         File out = packDir(tmp);
