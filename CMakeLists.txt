@@ -199,7 +199,7 @@ elseif(ANDROID)
     set(OPS_BC ${CMAKE_BINARY_DIR}/ops.bc)
     add_custom_command(OUTPUT ${OPS_BC}
       # relative paths: the bitcode records the source file name as given (embedded in the APK)
-      COMMAND ${CMAKE_C_COMPILER} --target=aarch64-linux-android30 -O2 -ffp-contract=off -fno-strict-aliasing -emit-llvm
+      COMMAND ${CMAKE_C_COMPILER} --target=aarch64-linux-android30 -O2 -ffp-contract=off -fno-strict-aliasing -fwrapv -emit-llvm
               -c runtime/src/recomp/ops.c -Iruntime/include -o ${OPS_BC}
       WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
       DEPENDS runtime/src/recomp/ops.c runtime/include/ppc.h VERBATIM)

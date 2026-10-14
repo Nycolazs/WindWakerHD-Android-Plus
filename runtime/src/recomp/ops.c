@@ -1,5 +1,8 @@
 /* Semantics of the Espresso instructions that don't change control flow, one function per
- * instruction form, for the on-device recompiler (recomp/emit.cpp).
+ * instruction form, for the on-device recompiler (recomp/emit.cpp). Built with -fwrapv
+ * (CMakeLists.txt): PowerPC integer arithmetic wraps, so a signed operation in here or in ppc.h is
+ * two's complement too, never undefined behaviour the optimizer may use (as ZeldaWWHDRecomp's game
+ * code build, its #172).
  *
  * Each function decodes its operands from the instruction word `w` itself. The recompiler emits a
  * call per guest instruction with `w` (and `addr`) as constants; after inlining, LLVM folds the
