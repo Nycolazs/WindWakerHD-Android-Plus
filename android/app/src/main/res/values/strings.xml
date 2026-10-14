@@ -55,6 +55,7 @@
         <item>System</item>
         <item>English</item>
         <item>Português (Brasil)</item>
+        <item>Español</item>
     </string-array>
     <string name="pad_face_bottom">Bottom face button (A / Cross)</string>
     <string name="pad_face_right">Right face button (B / Circle)</string>

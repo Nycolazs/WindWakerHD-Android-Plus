@@ -71,6 +71,7 @@
         <item>Do sistema</item>
         <item>English</item>
         <item>Português (Brasil)</item>
+        <item>Español</item>
     </string-array>
     <string name="pad_face_bottom">Botão de baixo (A / X do PlayStation)</string>
     <string name="pad_face_right">Botão da direita (B / Círculo)</string>
