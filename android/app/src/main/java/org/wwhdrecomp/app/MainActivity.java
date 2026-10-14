@@ -863,6 +863,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         Native.setOption("mod_swim_speed", prefs.getInt("mod_swim_speed", 100));
         Native.setOption("mod_run_mode", moveMode("mod_run"));
         Native.setOption("mod_swim_mode", moveMode("mod_swim"));
+        Native.setOption("autosave_secs", prefs.getInt("autosave_secs", 0));
     }
 
     void applyControlsAppearance() {

@@ -79,6 +79,10 @@ enum Cheat {
     kCheatSongs = 8, kCheatTriforce = 16, kCheatDungeon = 32, kCheatKey = 64,
 };
 void request_cheat(int which);  // any thread
+// the loaded save's address and whether a file is actually being played (not the title / file select):
+// used by the cheats and by the autosave (savestate.cpp) to know when snapshots make sense
+uint32_t save_addr();
+bool save_loaded(uint32_t s);
 enum Infinite { kInfHealth = 1, kInfMagic = 2, kInfAmmo = 4, kMoonJump = 8, kMoonNoFall = 16, kMoonAllAnims = 32 };  // switches (kMoonJump: hold L)
 bool infinite(int which);
 void set_infinite(int which, bool on);

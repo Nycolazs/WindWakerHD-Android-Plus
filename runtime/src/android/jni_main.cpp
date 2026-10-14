@@ -580,6 +580,8 @@ JNI_FN(void, setOption)(JNIEnv* env, jclass, jstring name, jint value) {
     else if (n == "cheat_moon_anims") mods::set_infinite(mods::kMoonAllAnims, value != 0);
     else if (n == "cheat_moon_rise") mods::set_moon_jump_speeds(value, mods::moon_jump_fly());
     else if (n == "cheat_moon_fly") mods::set_moon_jump_speeds(mods::moon_jump_rise(), value);
+    // autosave (savestate.cpp): seconds between automatic snapshots into the "Auto" slot (0 = off)
+    else if (n == "autosave_secs") ss::set_autosave_seconds(value);
 }
 
 JNI_FN(jint, getOption)(JNIEnv* env, jclass, jstring name) {
@@ -614,6 +616,7 @@ JNI_FN(jint, getOption)(JNIEnv* env, jclass, jstring name) {
     if (n == "cheat_moon_anims") return mods::infinite(mods::kMoonAllAnims);
     if (n == "cheat_moon_rise") return mods::moon_jump_rise();
     if (n == "cheat_moon_fly") return mods::moon_jump_fly();
+    if (n == "autosave_secs") return ss::autosave_seconds();
     return 0;
 }
 

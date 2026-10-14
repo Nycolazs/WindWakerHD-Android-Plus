@@ -203,6 +203,16 @@
     <string name="opt_import_hint">Restáuralos desde una carpeta; importar una partida reinicia el juego</string>
     <string name="opt_auto_backup">Copia de seguridad automática</string>
     <string name="opt_auto_backup_hint">Guarda una copia de tu partida en Downloads/WindWakerHD Saves, que sobrevive al desinstalar la app</string>
+    <string name="opt_autosave">Guardado automático</string>
+    <string name="opt_autosave_hint">Guarda una copia en la ranura Auto cada cierto tiempo mientras juegas</string>
+    <string-array name="autosave_intervals">
+        <item>Desactivado</item>
+        <item>Cada 1 min</item>
+        <item>Cada 2 min</item>
+        <item>Cada 5 min</item>
+        <item>Cada 10 min</item>
+    </string-array>
+    <string name="opt_slot_auto">Auto (guardado automático)</string>
     <string name="restore_title">¿Restaurar tu partida?</string>
     <string name="restore_message">Aún no hay ninguna partida. Si jugaste antes (una versión anterior de la app, o una copia de seguridad), elige la carpeta que la contiene: la carpeta \"%1$s\" en Downloads tiene las copias automáticas, o elige una carpeta a la que exportaras. También puedes hacerlo más tarde en Opciones > Partidas > Importar partidas.</string>
     <string name="restore_new_game">Partida nueva</string>

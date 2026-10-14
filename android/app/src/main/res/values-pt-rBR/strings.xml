@@ -216,6 +216,16 @@
     <string name="opt_import_hint">Restaura de uma pasta; importar um save do jogo reinicia o jogo</string>
     <string name="opt_auto_backup">Backup automático do save</string>
     <string name="opt_auto_backup_hint">Mantém uma cópia do seu save em Downloads/WindWakerHD Saves, que continua lá mesmo se o app for desinstalado</string>
+    <string name="opt_autosave">Salvamento automático</string>
+    <string name="opt_autosave_hint">Salva uma cópia no slot Auto neste intervalo enquanto você joga</string>
+    <string-array name="autosave_intervals">
+        <item>Desligado</item>
+        <item>A cada 1 min</item>
+        <item>A cada 2 min</item>
+        <item>A cada 5 min</item>
+        <item>A cada 10 min</item>
+    </string-array>
+    <string name="opt_slot_auto">Auto (salvamento automático)</string>
     <string name="restore_title">Restaurar seu save?</string>
     <string name="restore_message">Ainda não há um save do jogo. Se você já jogou antes (numa versão anterior do app, ou tem um backup), escolha a pasta onde ele está: a pasta \"%1$s\" em Downloads tem os backups automáticos, ou escolha uma pasta para onde você exportou. Também dá para fazer isso depois em Opções > Saves > Importar saves.</string>
     <string name="restore_new_game">Novo jogo</string>

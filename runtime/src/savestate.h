@@ -57,6 +57,7 @@ struct Reader {
 
 // ---- UI / test API (any thread) ----
 constexpr int kSlots = 5;
+constexpr int kAutoSlot = kSlots + 1;  // the autosave's own slot (states/slot6.bin), shown above slot 1
 struct SlotInfo {
     bool used = false;
     bool compatible = true;
@@ -64,10 +65,14 @@ struct SlotInfo {
     std::string area;  // stage name, if known
     int controller = 0;  // controls when saved: 0 unknown (older states), 1 GamePad, 2 Pro Controller
 };
-SlotInfo slot_info(int slot);           // 1..5
+SlotInfo slot_info(int slot);           // 1..5, and kAutoSlot (0)
 void request_save(int slot);
 void request_load(int slot);
 std::string last_message();             // short status for the title bar ("" when stale)
+
+// ---- autosave: snapshot into kAutoSlot every N seconds while a game is being played ----
+void set_autosave_seconds(int secs);    // 0 = off (any thread)
+int autosave_seconds();
 
 // ---- game thread: call at the frame boundary (top of the per-frame function) ----
 void service(Cpu* c);
