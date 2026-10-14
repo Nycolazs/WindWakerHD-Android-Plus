@@ -54,7 +54,24 @@ Get the latest APK from the **[Releases page](../../releases/latest)**.
 
 ## What's new in Plus
 
-### 🆕 New in v1.7: up to date with both projects, Turnip without restarts, always landscape
+### 🆕 New in v1.8: autosave, Spanish menus, any translation
+- **Autosave** (**Options → Saves → Autosave**): an **Auto** save-state slot, above slot 1, written
+  every 1, 2, 5 or 10 minutes while you play a save file. Off by default. By
+  [jaimepa17](https://github.com/jaimepa17) (#7).
+- **The app in Spanish**: every menu, dialog and setup screen, following the phone's language or
+  chosen in **Game → App language**. By [jaimepa17](https://github.com/jaimepa17) (#6).
+- **HUD buttons and cheats after a heart piece**: the X/Y/R touch buttons and the cheats stopped
+  working once Link's maximum health wasn't a whole number of hearts. Fixed by
+  [jaimepa17](https://github.com/jaimepa17) (#8).
+- **Any fan translation of the game**: **Mods → Portuguese (Brazil) translation → Install another
+  translation (any language)…** takes a translation's folder (Korean, say). The built-in Portuguese
+  one no longer replaces it, and the button icon mod leaves the HUD's text alone when the
+  translation's font lacks the characters it uses.
+- **Recompiled game code built with wrapping integer arithmetic** (as the original project's #172):
+  a signed overflow in the game behaves as on the Wii U instead of being undefined. The game code is
+  prepared again once after updating (about 10 minutes).
+
+### 🔄 New in v1.7: up to date with both projects, Turnip without restarts, always landscape
 - **Up to date with the Enhanced fork (1.3–1.4) and the Android port (v0.9.3)**:
   - **Frame rates**: 120 fps on 120 Hz screens; 60 fps is now paced (frames that don't fit are
     left out and the game keeps its speed) and replaces the adaptive mode. 60 fps (generated) stays
@@ -328,7 +345,7 @@ ANDROID_NDK=$HOME/Android/Sdk/ndk/27.2.12479018 tools/android/build-llvm.sh
 
 cd android
 echo "sdk.dir=$HOME/Android/Sdk" > local.properties
-./gradlew assembleRelease -PwwhdDeviceRecomp -PwwhdVersionCode=13 -PwwhdVersionName=1.7
+./gradlew assembleRelease -PwwhdDeviceRecomp -PwwhdVersionCode=14 -PwwhdVersionName=1.8
 ```
 
 The APK is in `android/app/build/outputs/apk/release/`. Sign APKs you share with your own key
@@ -347,6 +364,7 @@ a newer translation: `tools/translation/make_pack_patch.py <original pack> <tran
   the Android port (Vulkan renderer, on-device compilation, options menu).
 - **[SSunnKing/ZeldaWWHDRecompAndroid---ENHANCED](https://github.com/SSunnKing/ZeldaWWHDRecompAndroid---ENHANCED)**:
   the Enhanced fork (touch controls, widescreen, performance) this project is based on.
+- **[jaimepa17](https://github.com/jaimepa17)**: autosave, the Spanish menus and the HUD buttons fix.
 - **[Triforce-Heroes](https://triforce-heroes.com.br)** (Ricardo, Luana and David): the Brazilian
   Portuguese translation of the game.
 - **[Cemu](https://github.com/cemu-project/Cemu)**: the GPU address library and shader decompiler
