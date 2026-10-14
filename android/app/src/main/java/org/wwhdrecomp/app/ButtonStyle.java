@@ -34,7 +34,7 @@ final class ButtonStyle {
     private ButtonStyle() {}
 
     static final int WIIU = 0, XBOX = 1, PLAYSTATION = 2;
-    private static final int VERSION = 7;  // bump to rebuild the packs after a change here
+    private static final int VERSION = 8;  // bump to rebuild the packs after a change here
 
     // the icon font's button glyphs
     private static final int G_A = 0xE000, G_B = 0xE001, G_X = 0xE002, G_Y = 0xE003, G_PLUS = 0xE045, G_MINUS = 0xE046,
@@ -164,7 +164,8 @@ final class ButtonStyle {
                 GameFont gf = main != null ? GameFont.load(main) : null;
                 Map<String, Map<String, PackPatch.Edit>> edits = new HashMap<>();
                 edits.computeIfAbsent("CKingPic_bffnt.szs", k -> new HashMap<>()).put("CKingPic.bffnt", font -> restyle(font, style, map, gf));
-                if (!f.getName().contains("Jp")) {  // (the Japanese text uses those characters)
+                // (the Japanese text uses those characters; another translation's font may lack them)
+                if (!f.getName().contains("Jp") && main != null && hasGlyphs(main, HUD_CHARS)) {
                     edits.computeIfAbsent("CKingMain_bffnt.szs", k -> new HashMap<>()).put("CKingMain.bffnt", font -> hudFont(font, style, map, gf));
                     for (String l : HUD_LAYOUTS)
                         edits.computeIfAbsent(l + ".szs", k -> new HashMap<>()).put("blyt/" + l + ".bflyt", ButtonStyle::hudLayout);
@@ -368,6 +369,20 @@ final class ButtonStyle {
             p = (data + size + 15) & ~15;
         }
         return out;
+    }
+
+    // whether the font draws every one of `codes` (a code it lacks comes back as an empty cell)
+    private static boolean hasGlyphs(byte[] font, int[] codes) {
+        byte[] cells = Native.fontCells(font, codes);
+        if (cells == null) return false;
+        ByteBuffer h = ByteBuffer.wrap(cells, 0, 8).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        int size = h.getInt() * h.getInt() * 4;
+        for (int i = 0; i < codes.length; i++) {
+            boolean any = false;
+            for (int p = 3; p < size && !any; p += 4) any = cells[8 + i * size + p] != 0;
+            if (!any) return false;
+        }
+        return true;
     }
 
     private static int indexOf(int[] a, int v) {
