@@ -751,7 +751,9 @@ bool check_dispatch(Reader r, std::string& why) {
         uint32_t a = r.u32();
         std::string name = r.str();
         auto it = cur.find(a);
-        if (it == cur.end() || it->second != name) {
+        if (it != cur.end() && it->second == name) continue;
+        // saved by another session or version (other addresses): the same function there too
+        if (!dispatch::alias_host(a, name)) {
             why = "host function " + name + " is not registered at the same address";
             return false;
         }

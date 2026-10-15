@@ -57,6 +57,7 @@ namespace dispatch {
 void init();
 // register a host function callable from guest code; returns its guest address
 uint32_t register_host(PpcFunc fn, const char* name);
+bool alias_host(uint32_t addr, const std::string& name);  // a save state's address for a host function
 void set(uint32_t addr, PpcFunc fn);
 PpcFunc lookup(uint32_t addr);
 }  // namespace dispatch

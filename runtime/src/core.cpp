@@ -246,12 +246,53 @@ std::vector<std::pair<uint32_t, std::string>> host_functions() {
     return v;
 }
 
+// A host function's address comes from its name (a free slot from the name's hash), not from the
+// order of registration: some are registered on demand (true60_noop_proc with some frame rates), so
+// a save state (which holds these addresses in guest memory) failed to load in another session or
+// app version. The first 4096 slots stay free for the addresses of states saved before this, given
+// back by alias_host.
+static constexpr uint32_t kHostLegacySlots = 4096;
+static std::unordered_map<uint32_t, std::string> g_host_pending;  // address -> name, aliased once registered
+
 uint32_t register_host(PpcFunc fn, const char* name) {
-    uint32_t a = g_next_host.fetch_add(8);
-    set(a, fn);
+    (void)g_next_host;
     std::unique_lock lk(g_other_mutex);
+    uint64_t h = 1469598103934665603ull;
+    for (const char* p = name; *p; p++) h = (h ^ (uint8_t)*p) * 1099511628211ull;
+    const uint32_t slots = kHostSize / 8 - kHostLegacySlots;
+    uint32_t i = (uint32_t)(h % slots);
+    while (g_host_names.count(mem::kHleFuncBase + (kHostLegacySlots + i) * 8)) i = (i + 1) % slots;
+    uint32_t a = mem::kHleFuncBase + (kHostLegacySlots + i) * 8;
+    g_host_table[(a - mem::kHleFuncBase) >> 3] = fn;
     g_host_names[a] = name;
+    // a loaded save state had it at another address
+    for (auto it = g_host_pending.begin(); it != g_host_pending.end();) {
+        if (it->second == name && !g_host_names.count(it->first)) {
+            g_host_table[(it->first - mem::kHleFuncBase) >> 3] = fn;
+            g_host_names[it->first] = name;
+            it = g_host_pending.erase(it);
+        } else {
+            ++it;
+        }
+    }
     return a;
+}
+
+// a save state's host function at `addr`: the function registered under `name` there too (now, or
+// when it is registered). False if another function has that address.
+bool alias_host(uint32_t addr, const std::string& name) {
+    std::unique_lock lk(g_other_mutex);
+    auto at = g_host_names.find(addr);
+    if (at != g_host_names.end()) return at->second == name;
+    if (addr - mem::kHleFuncBase >= kHostSize || (addr & 7)) return false;
+    for (auto& [a, n] : g_host_names)
+        if (n == name) {
+            g_host_table[(addr - mem::kHleFuncBase) >> 3] = g_host_table[(a - mem::kHleFuncBase) >> 3].load();
+            g_host_names[addr] = name;
+            return true;
+        }
+    g_host_pending[addr] = name;
+    return true;
 }
 }  // namespace dispatch
 
