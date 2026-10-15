@@ -204,6 +204,8 @@ void latch_resolution_scale();  // frame boundary (swap)
 Surface* rescaled(Surface* s);
 // forget everything that refers to `old` and free it once the GPU is done with it
 void retire_image(const Image& old);
+void retire_images(const std::vector<Image>& olds);  // several at once (one cache flush)
+void evict_unused_textures();  // frame boundary: textures the game hasn't sampled for minutes
 
 // ---- shaders (vk_shader.cpp)
 void shader_compiler_init();

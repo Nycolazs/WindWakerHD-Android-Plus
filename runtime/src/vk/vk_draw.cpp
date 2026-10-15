@@ -1894,13 +1894,20 @@ static VkDescriptorSet cached_descriptor_set(uint64_t key, VkDescriptorSetLayout
 // forget everything that refers to the old image and free it once the GPU is done with it.
 // Framebuffers and cached descriptor sets are dropped wholesale (rare); the sets stay allocated
 // in their pool until the next trim.
-void retire_image(const Image& old) {
+void retire_image(const Image& old) { retire_images({old}); }
+
+void retire_images(const std::vector<Image>& olds) {
+    if (olds.empty()) return;
     end_pass();
     std::vector<VkImageView> views;
-    for (VkImageView v : old.attachViews)
-        if (v) views.push_back(v);
+    std::unordered_set<VkImage> images;
+    for (const Image& old : olds) {
+        images.insert(old.image);
+        for (VkImageView v : old.attachViews)
+            if (v) views.push_back(v);
+    }
     for (auto it = g_views.begin(); it != g_views.end();) {
-        if (it->second.image == old.image) {
+        if (images.count(it->second.image)) {
             if (it->second.view) views.push_back(it->second.view);
             it = g_views.erase(it);
         } else {
@@ -1914,11 +1921,11 @@ void retire_image(const Image& old) {
     g_set_cache.clear();
     g_set_hot.clear();
     g_set_cache_epoch++;
-    Image img = old;
-    on_complete([img, views, fbs] {
+    std::vector<Image> imgs = olds;
+    on_complete([imgs, views, fbs] {
         for (VkFramebuffer fb : fbs) vkDestroyFramebuffer(R.device, fb, nullptr);
         for (VkImageView v : views) vkDestroyImageView(R.device, v, nullptr);
-        vmaDestroyImage(R.vma, img.image, img.alloc);
+        for (const Image& img : imgs) vmaDestroyImage(R.vma, img.image, img.alloc);
     });
 }
 

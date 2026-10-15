@@ -90,6 +90,26 @@ std::vector<VkDescriptorPool> g_pool_free, g_pool_used;
 VkDescriptorPool g_pool_cur = VK_NULL_HANDLE;
 }  // namespace
 
+// Free upload chunks beyond a few are given back (every 300 frames): an area's load uploads hundreds
+// of MB of textures in a few frames, and the chunks it took stayed allocated for the session (~600 MB
+// of the memory Android ended the game for). Larger-than-standard ones go first.
+static void trim_upload_chunks() {
+    constexpr size_t kKeep = 4;
+    if (R.frame % 300) return;
+    std::sort(g_chunk_free.begin(), g_chunk_free.end(), [](const Chunk* a, const Chunk* b) { return a->size < b->size; });
+    size_t freed = 0;
+    VkDeviceSize bytes = 0;
+    while (!g_chunk_free.empty() && (g_chunk_free.size() > kKeep || g_chunk_free.back()->size > kChunkSize)) {
+        Chunk* c = g_chunk_free.back();
+        g_chunk_free.pop_back();
+        bytes += c->size;
+        vmaDestroyBuffer(R.vma, c->buf, c->alloc);
+        delete c;
+        freed++;
+    }
+    if (freed) LOG("[vk] gave back %zu upload chunks (%llu MB)", freed, (unsigned long long)(bytes >> 20));
+}
+
 Upload upload_alloc(VkDeviceSize size, VkDeviceSize align) {
     align = std::max<VkDeviceSize>(align, 4);
     VkDeviceSize start = g_chunk_cur ? (g_chunk_pos + align - 1) & ~(align - 1) : 0;
@@ -1010,6 +1030,9 @@ static void create_device() {
     vi.physicalDevice = R.pd;
     vi.device = R.device;
     vi.instance = R.instance;
+    // 64 MB blocks instead of 256 MB: textures freed by area left most blocks partly used (1.76 GB
+    // of blocks for 1.03 GB of allocations), and a block goes back to the system only when empty
+    vi.preferredLargeHeapBlockSize = 64ull << 20;
     VK_CHECK(vmaCreateAllocator(&vi, &R.vma));
 
     VkCommandPoolCreateInfo pi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -2626,6 +2649,8 @@ void swap() {
         static auto last = std::chrono::steady_clock::now();
         const auto t0 = std::chrono::steady_clock::now();
         cache_warm_step();
+        evict_unused_textures();
+        trim_upload_chunks();
         const auto t1 = std::chrono::steady_clock::now();
         hitch_report(std::chrono::duration<double, std::milli>(t0 - last).count(), std::chrono::duration<double, std::milli>(t1 - t0).count());
         last = t1;

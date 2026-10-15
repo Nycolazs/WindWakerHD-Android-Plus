@@ -3,6 +3,8 @@
 #include <cstdlib>
 #include <cmath>
 #include <tuple>
+#include <unistd.h>
+#include <unordered_set>
 // Guest surfaces <-> Vulkan images: render targets, depth buffers, sampled textures. Same rules as
 // the Metal renderer (gfx/metal_surfaces.mm); tiled layouts are decoded with the vendored LatteAddrLib.
 #include "Cafe/HW/Latte/ISA/LatteReg.h"
@@ -27,7 +29,8 @@ static uint64_t fnv(const uint8_t* p, size_t n) {
 }
 
 static uint64_t g_write_seq = 0;
-static std::vector<Surface*> g_linear_targets;  // linear-aligned colour render targets (surfaces are never freed)
+static std::vector<Surface*> g_linear_targets;  // linear-aligned colour render targets (never freed: see evict_unused_textures)
+static uint64_t g_surfaces_epoch;  // bumped when surfaces are freed (lookups that kept a Surface* check it)
 static Surface* adopt_newer_alias(Surface* s);
 uint64_t next_write_seq() { return ++g_write_seq; }
 uint64_t write_seq() { return g_write_seq; }
@@ -640,6 +643,7 @@ struct TexLookup {
     SurfaceDesc d;  // what the words describe (the mip chain is applied on every hit)
     uint64_t writeSeq;
     size_t surfaces;
+    uint64_t epoch;
     Surface* s;
     bool used;
 };
@@ -649,7 +653,8 @@ Surface* sampled_texture(const uint32_t* w, bool isDepthSampler) {
     uint64_t key = 0x9E3779B97F4A7C15ull;
     for (int i = 0; i < 7; i++) key = (key ^ w[i]) * 0xFF51AFD7ED558CCDull;
     TexLookup& tl = g_tex_lookups[(key ^ (key >> 29)) & 511];
-    if (tl.used && tl.writeSeq == g_write_seq && tl.surfaces == R.surfaces.size() && tl.depthSampler == isDepthSampler &&
+    if (tl.used && tl.writeSeq == g_write_seq && tl.surfaces == R.surfaces.size() && tl.epoch == g_surfaces_epoch &&
+        tl.depthSampler == isDepthSampler &&
         memcmp(tl.w, w, sizeof tl.w) == 0) {
         Surface* s = check_texture(tl.s);
         if (s && s->gpuWritten && tl.d.dim == (uint32_t)Latte::E_DIM::DIM_3D) return with_volume(s, tl.d);
@@ -709,11 +714,98 @@ Surface* sampled_texture(const uint32_t* w, bool isDepthSampler) {
     tl.d = d;
     tl.writeSeq = g_write_seq;  // after the check: an upload counts as a write
     tl.surfaces = R.surfaces.size();
+    tl.epoch = g_surfaces_epoch;
     tl.s = s;
     tl.used = true;
     if (s && s->gpuWritten && d.dim == (uint32_t)Latte::E_DIM::DIM_3D) return with_volume(s, d);
     if (s && s->gpuWritten && d.mips > 1 && !d.isDepth) return with_mip_chain(s, d);
     return s;
+}
+
+// Textures uploaded from guest memory are freed when the game hasn't sampled them for a while:
+// surfaces were never freed, and every area visited left its textures in GPU memory (Adreno has no
+// BC formats: RGBA8 with mips, ~100 MB per area; 1.3 -> 2.4 GB in a few minutes of changing areas on
+// a Galaxy S20 FE, until Android ended the game for low memory). Every 300 frames: those unused for
+// two minutes (WWHD_TEXTURE_IDLE_FRAMES, 0 = keep all), then, while the textures take more than a
+// tenth of the device's memory (at least 384 MB; WWHD_TEXTURE_BUDGET_MB), the least recently used
+// that weren't sampled in the last 300 frames. A texture sampled again is made again from guest
+// memory (its contents are the guest's); render targets, depth buffers and textures the GPU wrote
+// stay (their contents exist only on the GPU).
+// debug: WWHD_MEM_LOG=1 logs GPU memory by kind every 600 frames
+static void mem_log() {
+    static const bool on = getenv("WWHD_MEM_LOG") != nullptr;
+    if (!on || R.frame % 600) return;
+    uint64_t n[3] = {}, b[3] = {};  // CPU textures, GPU-written colour, depth
+    for (auto& [a, sp] : R.surfaces) {
+        const Surface* s = sp.get();
+        int k = s->isDepth ? 2 : s->gpuWritten ? 1 : 0;
+        n[k]++;
+        if (s->img.alloc) {
+            VmaAllocationInfo ai;
+            vmaGetAllocationInfo(R.vma, s->img.alloc, &ai);
+            b[k] += ai.size;
+        }
+    }
+    VmaTotalStatistics st;
+    vmaCalculateStatistics(R.vma, &st);
+    LOG("[mem] textures %llu (%llu MB), gpu colour %llu (%llu MB), depth %llu (%llu MB); vma blocks %llu MB in %u, allocations %llu MB in %u",
+        (unsigned long long)n[0], (unsigned long long)(b[0] >> 20), (unsigned long long)n[1], (unsigned long long)(b[1] >> 20),
+        (unsigned long long)n[2], (unsigned long long)(b[2] >> 20), (unsigned long long)(st.total.statistics.blockBytes >> 20),
+        st.total.statistics.blockCount, (unsigned long long)(st.total.statistics.allocationBytes >> 20), st.total.statistics.allocationCount);
+}
+
+static uint64_t texture_budget() {
+    if (const char* e = getenv("WWHD_TEXTURE_BUDGET_MB")) return strtoull(e, nullptr, 10) << 20;
+    const uint64_t ram = (uint64_t)sysconf(_SC_PHYS_PAGES) * (uint64_t)sysconf(_SC_PAGESIZE);
+    return std::max<uint64_t>(ram / 10, 384ull << 20);
+}
+
+void evict_unused_textures() {
+    mem_log();
+    static const uint64_t idle = getenv("WWHD_TEXTURE_IDLE_FRAMES") ? strtoull(getenv("WWHD_TEXTURE_IDLE_FRAMES"), nullptr, 10) : 7200;
+    static const uint64_t budget = texture_budget();
+    if (!idle || R.frame % 300) return;
+    auto bytes_of = [](const Surface* s) -> uint64_t {
+        if (!s->img.alloc) return 0;
+        VmaAllocationInfo ai;
+        vmaGetAllocationInfo(R.vma, s->img.alloc, &ai);
+        return ai.size;
+    };
+    auto evictable = [](const Surface* s) {
+        return !s->gpuWritten && !s->isDepth && !s->aliased && !s->feedbackCopy && !s->mipChain && !s->volume &&
+               s->lastCheckedFrame != ~0ull;
+    };
+    std::vector<std::pair<uint64_t, Surface*>> lru;  // last sampled frame, texture
+    uint64_t total = 0;
+    for (auto& [a, sp] : R.surfaces)
+        if (evictable(sp.get())) {
+            total += bytes_of(sp.get());
+            lru.push_back({sp->lastCheckedFrame, sp.get()});
+        }
+    std::sort(lru.begin(), lru.end(), [](auto& x, auto& y) { return x.first < y.first; });
+    std::unordered_set<const Surface*> drop;
+    uint64_t freed = 0;
+    for (auto& [last, s] : lru) {
+        const uint64_t age = R.frame - last;
+        if (age <= 300 || (age <= idle && total - freed <= budget)) break;
+        drop.insert(s);
+        freed += bytes_of(s);
+    }
+    if (drop.empty()) return;
+    std::vector<Image> imgs;
+    for (auto it = R.surfaces.begin(); it != R.surfaces.end();) {
+        if (!drop.count(it->second.get())) {
+            ++it;
+            continue;
+        }
+        if (it->second->img.image) imgs.push_back(it->second->img);
+        it = R.surfaces.erase(it);
+    }
+    retire_images(imgs);
+    g_surfaces_epoch++;
+    surfaces_changed();
+    LOG("[gfx] freed %zu unused textures (%llu MB; %llu MB of textures left, budget %llu MB)", imgs.size(),
+        (unsigned long long)(freed >> 20), (unsigned long long)((total - freed) >> 20), (unsigned long long)(budget >> 20));
 }
 
 // a sampled CPU texture: upload it if its memory changed (checked once per frame)
