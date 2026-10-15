@@ -29,6 +29,9 @@ extern "C" uint64_t g_draw_state_gen;    // gx2_core.cpp: bumped by any non-data
 #include <set>
 #include <sys/stat.h>
 #include <thread>
+#include <unordered_set>
+#include <dirent.h>
+#include <algorithm>
 #include <unistd.h>
 #include <zlib.h>
 
@@ -360,12 +363,14 @@ struct Shader {
     uint32_t varsRange = 0;                       // size of the uniform-variable block
     uint32_t blockRange[LATTE_NUM_MAX_UNIFORM_BUFFERS] = {};  // size bound for each uniform block
     std::atomic<int> state{CS_PENDING};       // translation: CS_FAILED, CS_DEFERRED, else see mod
+    uint64_t canon = 0;                       // its translation's identity (source and layout; g_dec_shared)
 };
 // compile state of a shader (translation failure, or its module's compile)
 static const std::atomic<int>& shader_state(const Shader* s) { return s->mod ? s->mod->state : s->state; }
 static std::unordered_map<uint64_t, Module*> g_modules;  // by hash of the translated source; render thread
 static size_t g_module_cache_hits;
 static std::unordered_map<uint64_t, Shader*> g_shaders;
+static size_t g_shaders_reused;  // made from a translation already done (shaderkeys)
 // The shader cache fills g_shaders with ~200k keys: a lookup there misses the CPU caches two or three
 // times (~8% of the render thread with ~2000 lookups a frame). The frame's keys are found here
 // first, one cache line each. Shaders are never freed, so an entry stays valid.
@@ -403,25 +408,34 @@ static void report_compile_error(const std::string& src, uint64_t key, const std
 // ---- SPIR-V cache on disk (spirv2.bin next to shaders.bin): translations seen in earlier sessions
 // skip glslang. Records: uint64 source hash, uint32 word count, words. The file only grows: when
 // every translation changes (strictMul), a new name starts it over and the old file is deleted.
+// Only where each module is kept in memory (the file reached 68 MB, all of it was in RAM): a
+// module's words are read when it is compiled.
 static std::mutex g_spv_mutex;
-static std::unordered_map<uint64_t, std::vector<uint32_t>> g_spv_disk;
+struct SpvAt { long offset; uint32_t words; };
+static std::unordered_map<uint64_t, SpvAt> g_spv_disk;
 static FILE* g_spv_out = nullptr;
+static FILE* g_spv_in = nullptr;
 static size_t g_spv_disk_hits;
 
 static void spirv_cache_open(const std::string& dir) {
     remove((dir + "/spirv.bin").c_str());  // translations before strictMul
     std::string path = dir + "/spirv2.bin";
+    long end = 0;
     if (FILE* f = fopen(path.c_str(), "rb")) {
         uint64_t h;
         uint32_t n;
         while (fread(&h, 8, 1, f) == 1 && fread(&n, 4, 1, f) == 1 && n < (1u << 24)) {
-            std::vector<uint32_t> w(n);
-            if (fread(w.data(), 4, n, f) != n) break;
-            g_spv_disk[h] = std::move(w);
+            long at = ftell(f);
+            if (fseek(f, (long)n * 4, SEEK_CUR) != 0) break;
+            g_spv_disk[h] = {at, n};
+            end = ftell(f);
         }
         fclose(f);
+        // a record cut short (the app ended while writing): appended records must follow whole ones
+        if (truncate(path.c_str(), end) != 0) end = -1;
     }
-    g_spv_out = fopen(path.c_str(), "ab");
+    g_spv_out = end >= 0 ? fopen(path.c_str(), "ab") : nullptr;
+    g_spv_in = fopen(path.c_str(), "rb");
     if (!g_spv_disk.empty()) LOG("[gfx] SPIR-V cache: %zu modules from %s", g_spv_disk.size(), path.c_str());
 }
 
@@ -431,9 +445,12 @@ static void compile_now(Module* m, uint64_t hash, uint64_t key, bool vertex, con
     {
         std::lock_guard<std::mutex> lk(g_spv_mutex);
         auto it = g_spv_disk.find(hash);
-        if (it != g_spv_disk.end()) {
-            spirv = it->second;
-            g_spv_disk_hits++;
+        if (it != g_spv_disk.end() && g_spv_in) {
+            spirv.resize(it->second.words);
+            if (fseek(g_spv_in, it->second.offset, SEEK_SET) == 0 && fread(spirv.data(), 4, spirv.size(), g_spv_in) == spirv.size())
+                g_spv_disk_hits++;
+            else
+                spirv.clear();
         }
     }
     if (spirv.empty()) {
@@ -449,8 +466,9 @@ static void compile_now(Module* m, uint64_t hash, uint64_t key, bool vertex, con
             uint32_t n = (uint32_t)spirv.size();
             fwrite(&hash, 8, 1, g_spv_out);
             fwrite(&n, 4, 1, g_spv_out);
+            long at = ftell(g_spv_out);
             fwrite(spirv.data(), 4, n, g_spv_out);
-            fflush(g_spv_out);
+            if (fflush(g_spv_out) == 0 && at > 0) g_spv_disk[hash] = {at, n};
         }
     }
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -486,6 +504,99 @@ static void start_module(Module* m) {
     compile_module(m, m->hash, m->key, m->vertex, std::move(m->pending));
     m->pending = std::string();
 }
+
+// What the renderer reads from a translation besides its source (bindings, uniform layout, texture
+// units), hashed: shaders with the same source and this share one translation object.
+static uint64_t dec_fingerprint(const LatteDecompilerShader* d) {
+    uint64_t h = hash_bytes(&d->resourceMapping, sizeof d->resourceMapping, 0x4445);
+    h = hash_bytes(d->textureUsesDepthCompare, sizeof d->textureUsesDepthCompare, h);
+    h = hash_bytes(d->textureUnitSamplerAssignment, sizeof d->textureUnitSamplerAssignment, h);
+    h = hash_bytes(d->textureUnitDim, sizeof d->textureUnitDim, h);
+    const auto& u = d->uniform;
+    const int32_t scalars[] = {(int32_t)d->outputParameterMask, u.loc_remapped, u.loc_uniformRegister, u.count_uniformRegister,
+                               u.loc_windowSpaceToClipSpaceTransform, u.loc_alphaTestRef, u.loc_pointSize, u.loc_fragCoordScale,
+                               u.loc_verticesPerInstance, (int32_t)u.uniformRangeSize, (int32_t)d->textureUnitMask2.to_ulong()};
+    h = hash_bytes(scalars, sizeof scalars, h);
+    h = hash_bytes(u.loc_framebufferFetchSize, sizeof u.loc_framebufferFetchSize, h);
+    h = hash_bytes(u.loc_streamoutBufferBase, sizeof u.loc_streamoutBufferBase, h);
+    for (auto& e : u.list_ufTexRescale) {
+        const int32_t v[2] = {(int32_t)e.texUnit, e.uniformLocation};
+        h = hash_bytes(v, sizeof v, h);
+    }
+    for (auto& e : d->list_remappedUniformEntries_register) h = hash_bytes(&e, sizeof e, h);
+    for (auto& g : d->list_remappedUniformEntries_bufferGroups) {
+        const uint16_t v[2] = {g.bufferId, g.kcacheBankIdOffset};
+        h = hash_bytes(v, sizeof v, h);
+        for (auto& e : g.entries) h = hash_bytes(&e, sizeof e, h);
+    }
+    for (auto& q : d->list_quickBufferList) {
+        const uint32_t v[2] = {q.index, q.size};
+        h = hash_bytes(v, sizeof v, h);
+    }
+    return h;
+}
+// ---- shader keys already translated (shaderkeys-*.bin next to shaders.bin): key -> the identity of
+// its translation (Shader::canon). Hundreds of render-state variants of a program translate to the
+// same shader; with this, a variant seen in an earlier session takes the translation of one already
+// made (from the cache's records) instead of being translated again: entering an area translated
+// 300-500 of them in one frame (~0.4 ms each, a 100-450 ms hitch). The file is per app version (a
+// new translator may translate a key differently). Records: uint64 key, uint64 canon.
+static std::vector<std::pair<uint64_t, uint64_t>> g_key_canon_sorted;  // loaded, sorted by key
+static std::unordered_map<uint64_t, uint64_t> g_key_canon_new;            // added this session
+static std::unordered_map<uint64_t, Shader*> g_canon_shader;              // canon -> a shader with it
+static FILE* g_keys_out = nullptr;
+
+static void key_canon_open(const std::string& dir) {
+    const char* v = getenv("WWHD_APP_VERSION");
+    std::string path = dir + "/shaderkeys-" + (v ? v : "dev") + "-1.bin";
+    // other versions' tables
+    if (DIR* d = opendir(dir.c_str())) {
+        while (dirent* e = readdir(d)) {
+            std::string n = e->d_name;
+            if (n.rfind("shaderkeys-", 0) == 0 && dir + "/" + n != path) remove((dir + "/" + n).c_str());
+        }
+        closedir(d);
+    }
+    if (FILE* f = fopen(path.c_str(), "rb")) {
+        uint64_t r[2];
+        while (fread(r, sizeof r, 1, f) == 1) g_key_canon_sorted.push_back({r[0], r[1]});
+        fclose(f);
+        // the last record of a key wins
+        std::stable_sort(g_key_canon_sorted.begin(), g_key_canon_sorted.end(), [](auto& a, auto& b) { return a.first < b.first; });
+        std::vector<std::pair<uint64_t, uint64_t>> u;
+        u.reserve(g_key_canon_sorted.size());
+        for (auto& e : g_key_canon_sorted) {
+            if (!u.empty() && u.back().first == e.first) u.back() = e;
+            else u.push_back(e);
+        }
+        g_key_canon_sorted.swap(u);
+    }
+    g_keys_out = fopen(path.c_str(), "ab");
+}
+
+static bool key_canon_find(uint64_t key, uint64_t& canon) {
+    auto it = g_key_canon_new.find(key);
+    if (it != g_key_canon_new.end()) { canon = it->second; return true; }
+    auto lb = std::lower_bound(g_key_canon_sorted.begin(), g_key_canon_sorted.end(), key, [](auto& e, uint64_t k) { return e.first < k; });
+    if (lb == g_key_canon_sorted.end() || lb->first != key) return false;
+    canon = lb->second;
+    return true;
+}
+
+static void key_canon_add(uint64_t key, uint64_t canon) {
+    uint64_t known;
+    if (key_canon_find(key, known) && known == canon) return;
+    g_key_canon_new[key] = canon;
+    if (g_keys_out) {
+        uint64_t r[2] = {key, canon};
+        fwrite(r, sizeof r, 1, g_keys_out);
+    }
+}
+
+// by source hash and fingerprint: the translation the shaders with it share. Variants of one
+// program (different render state, same output) are most of the ~300k shaders of a large cache; a
+// translation object each was hundreds of MB.
+static std::unordered_map<uint64_t, LatteDecompilerShader*> g_dec_shared;
 
 // attach the shader to the module for its translation, compiling that module if it is new; with
 // defer (the cache replay) a new module is only created, keeping the source, and compiled later
@@ -533,6 +644,15 @@ static void compile_shader(Shader* sh, bool defer = false) {
     uint64_t hash = hash_bytes(src.data(), src.size(), sh->vertex ? 0x5653ull : 0x5053ull) ^ src.size();
     auto it = g_modules.find(hash);
     free_source(sh);
+    {
+        sh->canon = hash ^ dec_fingerprint(sh->dec) * 0x9E3779B97F4A7C15ull;
+        LatteDecompilerShader*& shared = g_dec_shared[sh->canon];
+        if (!shared) shared = sh->dec;
+        else if (shared != sh->dec) {
+            delete sh->dec;
+            sh->dec = shared;
+        }
+    }
     if (it != g_modules.end()) {
         sh->mod = it->second;
         g_module_cache_hits++;
@@ -622,11 +742,22 @@ static const struct { uint32_t first, count; } kKeyRegs[] = {
     {REGADDR::PA_CL_VTE_CNTL, 1}, {REGADDR::PA_CL_CLIP_CNTL, 1}, {REGADDR::CB_COLOR_CONTROL, 1}, {REGADDR::CB_TARGET_MASK, 1},
     {mmCB_COLOR0_INFO, 8}};
 
-// the register state that shapes a stage's translation, as words (hashed into the shader key)
-static uint32_t stage_state_words(const uint32_t* regs, uint32_t texBase, uint32_t* buf) {
+// the register state that shapes a stage's translation, as words (hashed into the shader key).
+// texMask / samplerMask: the texture units and samplers the program uses (prog_tex below; all until
+// it is known): the others' words are left out as zeros. They keep the state of earlier draws and
+// don't change the translation (the decompiler reads only the units the program samples), but in
+// the key they made one shader into hundreds of variants: 276k translated (17 s at every start,
+// ~700 MB) for ~3k distinct shaders, the memory that got the game killed when changing areas.
+// A pixel shader's key leaves out the vertex fetch semantics (SQ_VTX_SEMANTIC_*: only vertex shaders
+// read them, for their attribute loads), which changed with every mesh drawn; `legacy` keeps them
+// (the keys the cache's pipeline recipes were recorded with).
+static uint32_t stage_state_words(const uint32_t* regs, uint32_t texBase, uint32_t* buf, uint32_t texMask = 0x3FFFF,
+                                  uint64_t samplerMask = ~0ull, bool legacy = false) {
     uint32_t n = 0;
     for (auto& k : kKeyRegs) {
         memcpy(&buf[n], &regs[k.first], k.count * 4);
+        if (k.first == mmSQ_VTX_SEMANTIC_0 && !legacy && texBase == REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS)
+            memset(&buf[n], 0, k.count * 4);
         n += k.count;
     }
     uint32_t cbBase[8];
@@ -637,6 +768,12 @@ static uint32_t stage_state_words(const uint32_t* regs, uint32_t texBase, uint32
     buf[n++] = regs[REGADDR::DB_DEPTH_CONTROL] & 0x83;
     // texture types and formats
     for (int t = 0; t < 18; t++) {
+        if (!(texMask >> t & 1)) {
+            buf[n++] = 0;
+            buf[n++] = 0;
+            buf[n++] = 0;
+            continue;
+        }
         const uint32_t* w = &regs[texBase + t * 7];
         buf[n++] = (w[0] & 7) | (w[4] & 0x300);
         buf[n++] = w[1] & 0x3F00000;
@@ -647,9 +784,19 @@ static uint32_t stage_state_words(const uint32_t* regs, uint32_t texBase, uint32
         buf[n++] = fb;
     }
     // depth-compare samplers
-    for (int i = 0; i < 18 * 3; i++) buf[n++] = regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + i * 3] & 0xF8000000;
+    for (int i = 0; i < 18 * 3; i++) buf[n++] = samplerMask >> i & 1 ? regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + i * 3] & 0xF8000000 : 0;
     return n;
 }
+
+static bool g_cache_replaying = false;  // the shader cache's recipes are being replayed (cache_load)
+
+// per program (microcode hash and stage): the texture units it samples and their samplers, from its
+// first translation (the microcode alone decides them)
+struct ProgTex { uint32_t tex; uint64_t samplers; };
+static std::unordered_map<uint64_t, ProgTex> g_prog_tex;
+// during the cache replay: shader keys as recorded before the masking above (the pipeline recipes
+// name their shaders by those) to the shader now; emptied once the recipes are translated
+static std::unordered_map<uint64_t, Shader*> g_key_alias;
 
 static uint64_t stage_state_hash(const uint32_t* regs, uint64_t h, uint32_t texBase) {
     uint32_t buf[400];
@@ -791,16 +938,35 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
     struct Memo { uint64_t base, fsKey; uint32_t n; uint32_t words[400]; Shader* s; };
     static Memo memo[64];
     uint32_t words[400];
-    uint32_t n = stage_state_words(regs, vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS, words);
+    const uint32_t texBase = vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
+    auto pt = g_prog_tex.find(base);
+    const bool masked = pt != g_prog_tex.end();
+    uint32_t n = masked ? stage_state_words(regs, texBase, words, pt->second.tex, pt->second.samplers)
+                        : stage_state_words(regs, texBase, words);
     const uint32_t area = !vertex && g_area_blur.load(std::memory_order_relaxed)
                               ? vk_area_sample::units_for_pixel_shader(mem::ptr(addr), size) : 0;
     uint64_t fk = vertex ? fsKey : link.key ^ ((uint64_t)area << 56);
     Memo& m = memo[(base ^ (base >> 21) ^ fk) & 63];
-    if (m.s && m.base == base && m.fsKey == fk && m.n == n && memcmp(m.words, words, n * 4) == 0) return m.s;
-    key = hash_bytes(words, n * 4, key);
-    if (vertex) key ^= fsKey * 31;
-    else key ^= link.key * 37 ^ (uint64_t)area * 0x9E3779B97F4A7C15ull;  // link.key 0 when every input is fed
+    // the cache replay: the key the record had (all units), for the pipeline recipes that name it
+    uint64_t oldKey = 0;
+    auto finish_key = [&](uint64_t k, const uint32_t* w, uint32_t count) {
+        k = hash_bytes(w, count * 4, k);
+        if (vertex) k ^= fsKey * 31;
+        else k ^= link.key * 37 ^ (uint64_t)area * 0x9E3779B97F4A7C15ull;  // link.key 0 when every input is fed
+        return k;
+    };
+    if (g_cache_replaying) {
+        uint32_t full[400];
+        uint32_t fn = stage_state_words(regs, texBase, full, 0x3FFFF, ~0ull, true);
+        oldKey = finish_key(key, full, fn);
+    }
+    if (m.s && m.base == base && m.fsKey == fk && m.n == n && memcmp(m.words, words, n * 4) == 0) {
+        if (oldKey && oldKey != m.s->key) g_key_alias[oldKey] = m.s;
+        return m.s;
+    }
+    key = finish_key(key, words, n);
     auto remember = [&](Shader* sh) {
+        if (oldKey && oldKey != sh->key) g_key_alias[oldKey] = sh;
         m.base = base;
         m.fsKey = fk;
         m.n = n;
@@ -818,11 +984,37 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
         return remember(it->second);
     }
 
+    // a key translated before (shaderkeys): the translation of the shader with the same identity
+    if (uint64_t canon; key_canon_find(key, canon)) {
+        auto c = g_canon_shader.find(canon);
+        if (c != g_canon_shader.end()) {
+            const Shader* o = c->second;
+            auto* s = new Shader();
+            s->key = key;
+            s->vertex = vertex;
+            s->dec = o->dec;
+            s->areaUnits = o->areaUnits;
+            s->mod = o->mod;
+            s->dsl = o->dsl;
+            s->bindings = o->bindings;
+            s->dynamicUbos = o->dynamicUbos;
+            s->varsRange = o->varsRange;
+            memcpy(s->blockRange, o->blockRange, sizeof s->blockRange);
+            s->state.store(o->state.load());
+            s->canon = canon;
+            g_shaders[key] = s;
+            hot = {key, s};
+            if (oldKey && oldKey != key) g_key_alias[oldKey] = s;
+            g_shaders_reused++;
+            return remember(s);
+        }
+    }
     auto* s = new Shader();
     s->key = key;
     s->vertex = vertex;
     g_shaders[key] = s;
     hot = {key, s};
+    if (oldKey && oldKey != key) g_key_alias[oldKey] = s;
     double t0 = now_ms();
     LatteShader_UpdatePSInputs((uint32*)regs);
     LatteDecompilerOptions opt;
@@ -846,6 +1038,17 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
         return s;
     }
     s->dec = FinishDecompiledShader(out);
+    if (!masked) {
+        ProgTex t{0, 0};
+        const uint32_t samplerBase = vertex ? SAMPLER_BASE_INDEX_VERTEX : SAMPLER_BASE_INDEX_PIXEL;
+        for (int u = 0; u < LATTE_NUM_MAX_TEX_UNITS; u++) {
+            if (!s->dec->textureUnitMask2[u]) continue;
+            t.tex |= 1u << u;
+            uint32_t smp = s->dec->textureUnitSamplerAssignment[u];
+            if (smp < LATTE_NUM_MAX_TEX_UNITS) t.samplers |= 1ull << (samplerBase + smp);
+        }
+        g_prog_tex[base] = t;
+    }
     create_set_layout(s);
     cache_record_shader(regs, vertex);
     g_t_decompile += now_ms() - t0;
@@ -859,6 +1062,10 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
     }
     // cache replay: new modules are compiled on first use or gradually in the background
     compile_shader(s, g_defer_compiles);
+    if (s->canon) {
+        g_canon_shader.emplace(s->canon, s);
+        key_canon_add(key, s->canon);
+    }
     static uint32_t count = 0;
     if (++count % 100 == 0) LOG("[gfx] %u shaders translated", count);
     return s;
@@ -2095,7 +2302,6 @@ static bool draw_indices(uint32_t prim, uint32_t count, uint32_t indexType, uint
 namespace {
 constexpr uint32_t kRecShader = 1, kRecPipelineVk = 4;
 FILE* g_cache_out = nullptr;
-bool g_cache_replaying = false;
 bool g_cache_disabled = false;
 
 struct PipelineRecipe {
@@ -2180,7 +2386,8 @@ static void cache_record_pipeline(const uint32_t* regs, Shader* vs, Shader* ps, 
 }
 
 // progress of cache_load for the app's loading screen (cache_progress): 0 not started, 1 loading,
-// 2 done; bytes of the file read and its size; shader variants prepared
+// 2 done, 3 building the cached pipelines; bytes of the file read and its size (pipelines built and
+// queued in state 3); shader variants prepared
 static std::atomic<int> g_cache_state{0};
 static std::atomic<uint64_t> g_cache_done{0}, g_cache_total{0}, g_cache_shaders{0};
 void cache_progress(uint64_t out[4]) {
@@ -2188,6 +2395,79 @@ void cache_progress(uint64_t out[4]) {
     out[1] = g_cache_done.load();
     out[2] = g_cache_total.load();
     out[3] = g_cache_shaders.load();
+}
+
+static void prebuild_pipelines();
+
+// After the replay: the pipeline recipes name their shaders by the keys they had when recorded
+// (before unused texture units and, for pixel shaders, the vertex semantics were left out of the
+// key): renamed to the shaders' keys now, repeats dropped. The file only grew (335 MB, 300k shader
+// variants after some hours: ~25 s of translation at every start and hundreds of MB): when most of
+// its shader records aren't needed it is rewritten with those a pipeline recipe uses, one per
+// distinct translation (so every module is compiled ahead), and the renamed recipes. A variant
+// left out takes its translation through shaderkeys when a draw needs it.
+struct CacheRecord { long at; uint32_t len; Shader* shader; };
+static void cache_compact(const std::string& path, FILE* f, const std::vector<CacheRecord>& records, size_t shaderRecords) {
+    auto resolve = [](uint64_t k) -> Shader* {
+        auto it = g_shaders.find(k);
+        if (it != g_shaders.end()) return it->second;
+        auto a = g_key_alias.find(k);
+        return a != g_key_alias.end() ? a->second : nullptr;
+    };
+    const size_t recipesBefore = g_pending_pipelines.size();
+    std::unordered_set<uint64_t> seen;
+    std::vector<PipelineRecipe> recipes;
+    recipes.reserve(g_pending_pipelines.size());
+    for (PipelineRecipe r : g_pending_pipelines) {
+        Shader* vs = resolve(r.vsKey);
+        Shader* ps = resolve(r.psKey);
+        if (!vs || !ps) continue;
+        r.vsKey = vs->key;
+        r.psKey = ps->key;
+        if (seen.insert(hash_bytes(&r, sizeof r, 0x5045)).second) recipes.push_back(r);
+    }
+    g_pending_pipelines.swap(recipes);
+    std::unordered_map<uint64_t, Shader*>().swap(g_key_alias);
+    std::unordered_set<const Shader*> used;
+    for (const PipelineRecipe& r : g_pending_pipelines) {
+        used.insert(g_shaders[r.vsKey]);
+        used.insert(g_shaders[r.psKey]);
+    }
+    std::unordered_set<const void*> covered;  // translations (Shader::canon) with a record kept
+    for (const CacheRecord& r : records)
+        if (used.count(r.shader) && r.shader->canon) covered.insert((const void*)(uintptr_t)r.shader->canon);
+    std::vector<CacheRecord> keep;
+    for (const CacheRecord& r : records)
+        if (used.count(r.shader) || (r.shader->canon && covered.insert((const void*)(uintptr_t)r.shader->canon).second))
+            keep.push_back(r);
+    if (shaderRecords < 8192 || shaderRecords < 2 * keep.size()) return;
+    const double t0 = now_ms();
+    std::string tmp = path + ".tmp";
+    FILE* o = fopen(tmp.c_str(), "wb");
+    if (!o) return;
+    bool ok = true;
+    std::vector<uint8_t> buf;
+    for (const CacheRecord& r : keep) {
+        buf.resize(r.len);
+        ok = ok && fseek(f, r.at, SEEK_SET) == 0 && fread(buf.data(), 1, r.len, f) == r.len && fwrite(buf.data(), 1, r.len, o) == r.len;
+    }
+    for (const PipelineRecipe& r : g_pending_pipelines) {
+        std::vector<uint8_t> raw;
+        put(raw, r);
+        uLongf csize = compressBound(raw.size());
+        std::vector<uint8_t> comp(csize);
+        if (compress2(comp.data(), &csize, raw.data(), raw.size(), 6) != Z_OK) continue;
+        uint32_t hdr[3] = {kRecPipelineVk, (uint32_t)raw.size(), (uint32_t)csize};
+        ok = ok && fwrite(hdr, sizeof hdr, 1, o) == 1 && fwrite(comp.data(), 1, csize, o) == csize;
+    }
+    ok = fclose(o) == 0 && ok;
+    if (!ok || rename(tmp.c_str(), path.c_str()) != 0) {
+        remove(tmp.c_str());
+        LOG("[gfx] shader cache: compacting failed");
+        return;
+    }
+    LOG("[gfx] shader cache compacted: %zu of %zu shader records, %zu of %zu pipeline recipes kept (%.0f ms)", keep.size(),
+        shaderRecords, g_pending_pipelines.size(), recipesBefore, now_ms() - t0);
 }
 
 // load and replay the recipes; runs once on the render thread before the first draw
@@ -2198,6 +2478,7 @@ static void cache_load() {
     if (path == "0") { g_cache_disabled = true; return; }
     size_t slash = path.find_last_of('/');
     spirv_cache_open(slash == std::string::npos ? std::string(".") : path.substr(0, slash));
+    key_canon_open(slash == std::string::npos ? std::string(".") : path.substr(0, slash));
     double t0 = now_ms();
     size_t shaders = 0, pipelines = 0;
     if (FILE* f = fopen(path.c_str(), "rb")) {
@@ -2210,7 +2491,10 @@ static void cache_load() {
         g_cache_replaying = true;
         g_defer_compiles = true;
         uint32_t hdr[3];
-        while (fread(hdr, sizeof hdr, 1, f) == 1) {
+        // the shader records that made a new shader (the rest repeat one): what a compacted file keeps
+        std::vector<CacheRecord> keep;
+        size_t shaderRecords = 0;
+        for (long at = ftell(f); fread(hdr, sizeof hdr, 1, f) == 1; at = ftell(f)) {
             std::vector<uint8_t> comp(hdr[2]), raw(hdr[1]);
             if (fread(comp.data(), 1, hdr[2], f) != hdr[2]) break;
             uLongf rsize = hdr[1];
@@ -2267,7 +2551,10 @@ static void cache_load() {
             uint64_t fsKey = 0;
             LatteFetchShader* fs = vertex ? get_fetch_shader(regs.data(), &fsKey) : nullptr;
             if (vertex && !fs) continue;
-            get_shader_uncached(regs.data(), vertex, fs, fsKey);
+            const size_t known = g_shaders.size();
+            Shader* made = get_shader_uncached(regs.data(), vertex, fs, fsKey);
+            shaderRecords++;
+            if (g_shaders.size() != known && made) keep.push_back({at, (uint32_t)sizeof hdr + hdr[2], made});
             shaders++;
             if ((shaders & 255) == 0) {
                 g_cache_shaders = shaders;
@@ -2275,9 +2562,10 @@ static void cache_load() {
                 if (at > 0) g_cache_done = (uint64_t)at;
             }
         }
-        fclose(f);
         g_cache_replaying = false;
         g_defer_compiles = false;
+        cache_compact(path, f, keep, shaderRecords);
+        fclose(f);
     }
     void headstart_load();  // gfx/shader_headstart.cpp
     headstart_load();
@@ -2285,6 +2573,7 @@ static void cache_load() {
     if (shaders || pipelines)
         LOG("[gfx] shader cache: replayed %zu shaders, %zu pipelines queued (%.0f ms) from %s", shaders, pipelines,
             now_ms() - t0, path.c_str());
+    prebuild_pipelines();
 }
 
 // build queued pipelines whose shaders have finished compiling, at most `budget` of them and only
@@ -2328,6 +2617,55 @@ static void build_pending_pipelines(int budget, int maxInFlight) {
     }
     g_building_ahead = false;
     g_cache_replaying = false;
+}
+
+// Every cached pipeline (and its shaders) built before the first frame, behind the loading screen,
+// instead of a few per frame while playing: built in the background, a pipeline the game needed
+// before its turn came was waited for or its draws skipped (hitches and pop-in for the first minutes,
+// with tens of thousands queued), and the compiles kept the CPU busy (heat) during play. With a warm
+// driver cache (the pipeline cache file) this takes seconds. WWHD_SHADERS_AT_START=0 leaves them to
+// the background as before; it gives up after WWHD_SHADERS_AT_START_S seconds (default 300), the
+// rest then built in the background.
+static void prebuild_pipelines() {
+    const char* e = getenv("WWHD_SHADERS_AT_START");
+    if ((e && atoi(e) == 0) || (g_pending_pipelines.empty() && g_deferred_modules.empty()) || g_sync_shaders) return;
+    const double limitMs = 1000.0 * (getenv("WWHD_SHADERS_AT_START_S") ? atof(getenv("WWHD_SHADERS_AT_START_S")) : 300.0);
+    const size_t total = g_pending_pipelines.size(), builtBefore = g_recipes_built;
+    const double t0 = now_ms();
+    g_cache_done = 0;
+    g_cache_total = total;
+    g_cache_state = 3;
+    constexpr int kInFlight = 64;  // the workers' queue: enough to keep every compile thread busy
+    while (!g_pending_pipelines.empty() && now_ms() - t0 < limitMs) {
+        size_t before = g_pending_pipelines.size();
+        build_pending_pipelines(INT_MAX, kInFlight);
+        g_cache_done = total - g_pending_pipelines.size();
+        g_cache_shaders = g_recipes_built - builtBefore;
+        if (g_pending_pipelines.size() == before || g_compiles_in_flight >= kInFlight) {
+            // waiting for shader compiles (or a full queue): wake when one finishes
+            std::unique_lock<std::mutex> lk(g_compile_m);
+            g_compile_cv.wait_for(lk, std::chrono::milliseconds(5));
+        }
+    }
+    // the cached shaders no pipeline recipe uses (yet)
+    while (!g_deferred_modules.empty() && now_ms() - t0 < limitMs) {
+        if (g_compiles_in_flight >= kInFlight) {
+            std::unique_lock<std::mutex> lk(g_compile_m);
+            g_compile_cv.wait_for(lk, std::chrono::milliseconds(5));
+            continue;
+        }
+        Module* m = g_deferred_modules.back();
+        g_deferred_modules.pop_back();
+        start_module(m);
+    }
+    // the last compiles
+    while (g_compiles_in_flight > 0 && now_ms() - t0 < limitMs) {
+        std::unique_lock<std::mutex> lk(g_compile_m);
+        g_compile_cv.wait_for(lk, std::chrono::milliseconds(5));
+    }
+    LOG("[gfx] cached pipelines built before the first frame: %zu of %zu (%zu unresolved) in %.0f ms%s",
+        g_recipes_built - builtBefore, total, g_recipes_dropped, now_ms() - t0,
+        g_pending_pipelines.empty() ? "" : "; the rest in the background");
 }
 
 // build cached pipelines whose shaders have finished compiling; a few per frame
@@ -2384,8 +2722,8 @@ void report_skips() {
         LOG("[gfx] waited for compiles (policy %d): recent targets %llu draws %.0f ms, intermittent %llu draws %.0f ms, "
             "new targets %llu draws %.0f ms", g_wait_policy, (unsigned long long)g_waited_n[0], g_waited_ms[0],
             (unsigned long long)g_waited_n[1], g_waited_ms[1], (unsigned long long)g_waited_n[2], g_waited_ms[2]);
-    LOG("[gfx] %zu shaders (%zu distinct modules, %zu SPIR-V from disk), %zu pipelines; ms decompile %.0f, spirv %.0f, pipeline %.0f",
-        g_shaders.size(), g_modules.size(), g_spv_disk_hits, g_pipelines.size(), g_t_decompile, g_t_spirv_us / 1000.0,
+    LOG("[gfx] %zu shaders (%zu reusing a translation, %zu distinct modules, %zu SPIR-V from disk), %zu pipelines; ms decompile %.0f, spirv %.0f, pipeline %.0f",
+        g_shaders.size(), g_shaders_reused, g_modules.size(), g_spv_disk_hits, g_pipelines.size(), g_t_decompile, g_t_spirv_us / 1000.0,
         g_t_pipeline_us / 1000.0);
     extern uint64_t g_stat_full_checks, g_stat_uploads, g_stat_invalidates, g_stat_invalidated_surfaces, g_stat_texture_stale;
     LOG("[gfx] last 300 frames: %llu full texture checks, %llu uploads, %llu invalidates marking %llu surfaces; %llu texture "
