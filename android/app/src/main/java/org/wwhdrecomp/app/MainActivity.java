@@ -432,6 +432,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 new File(getNoBackupFilesDir(), "shadercache").getAbsolutePath(), base.getAbsolutePath());
         started = true;
         applyOptions();
+        startThermal();
         startMotion();
         showGame();
         showCacheLoading();
@@ -1371,6 +1372,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (started) autoBackup();
         if (motion != null) motion.stop();
         if (rumble != null) rumble.stop();
+        if (thermal != null) thermal.stop();
     }
 
     @Override
@@ -1383,6 +1385,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         updateDrcDisplay();
         if (started) {
             Native.setPaused(false);
+            startThermal();
             startMotion();
             checkControllerConnected();
         }
@@ -1434,7 +1437,32 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (RES_SCALES[i].equals(prefs.getString("res_scale", "1"))) return;
         prefs.edit().putString("res_scale", RES_SCALES[i]).commit();
         Native.setOption("res_scale", Math.round(Float.parseFloat(RES_SCALES[i]) * 100));
+        if (thermal != null) thermal.configure(Float.parseFloat(RES_SCALES[i]), dynamicResolution());
         controls.resetPerfAverage();
+    }
+
+    // ---- dynamic resolution by temperature (ThermalScaler)
+    private ThermalScaler thermal;
+
+    boolean dynamicResolution() { return prefs.getBoolean("dynamic_res", true); }
+
+    void setDynamicResolution(boolean on) {
+        prefs.edit().putBoolean("dynamic_res", on).apply();
+        startThermal();
+    }
+
+    /** the resolution in use when the temperature lowered it, else null */
+    String thermalResolution() {
+        if (thermal == null) return null;
+        float chosen = Float.parseFloat(prefs.getString("res_scale", "1"));
+        return thermal.current() < chosen ? (thermal.current() == (int) thermal.current() ? String.valueOf((int) thermal.current())
+                : String.valueOf(thermal.current())) : null;
+    }
+
+    private void startThermal() {
+        if (thermal == null) thermal = new ThermalScaler(this);
+        thermal.configure(Float.parseFloat(prefs.getString("res_scale", "1")), dynamicResolution());
+        thermal.start();
     }
 
     void setMod(String key, boolean on) {

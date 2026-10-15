@@ -458,6 +458,9 @@
     <string name="cache_loading_detail">%1$,d variantes de shader preparadas</string>
     <string name="cache_building">Preparando todos los shaders antes de que empiece el juego…</string>
     <string name="cache_building_detail">%1$,d de %2$,d pipelines</string>
+    <string name="opt_dynamic_res">Bajar la resolución cuando el teléfono se calienta</string>
+    <string name="opt_dynamic_res_hint">Por encima de 1x: la resolución baja mientras el teléfono está caliente (menos calor y batería, sin pérdida de rendimiento por temperatura) y vuelve cuando se enfría</string>
+    <string name="dynamic_res_now">Ahora: %1$sx por la temperatura</string>
     <string name="opt_shaders_at_start">Preparar todos los shaders al iniciar</string>
     <string name="opt_shaders_at_start_hint">Prepara todos los shaders que el juego ya usó en la pantalla de carga: sin tirones al jugar, una carga más larga. Se aplica en el próximo inicio</string>
     <string name="crash_not_now">Ahora no</string>

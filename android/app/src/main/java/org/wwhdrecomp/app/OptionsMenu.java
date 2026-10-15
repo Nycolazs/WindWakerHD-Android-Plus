@@ -531,6 +531,10 @@ final class OptionsMenu extends Dialog {
                    Native.setOption("core_mode", i);
                });
         choice(R.string.opt_resolution, 0, res, indexOf(MainActivity.RES_SCALES, a.prefs.getString("res_scale", "1"), 2), a::setResolution);
+        String hot = a.thermalResolution();
+        toggleText(a.getString(R.string.opt_dynamic_res), a.getString(R.string.opt_dynamic_res_hint)
+                        + (hot != null ? "\n" + a.getString(R.string.dynamic_res_now, hot) : ""),
+                a.dynamicResolution(), a::setDynamicResolution);
         submenu(R.string.opt_framegen, 0, a.frameGenLabel(), () -> openPage(this::frameGenPage));
         choice(R.string.opt_render_aspect, R.string.opt_render_aspect_hint, a.getResources().getStringArray(R.array.render_aspect_modes),
                a.prefs.getInt("render_aspect", 0), i -> {

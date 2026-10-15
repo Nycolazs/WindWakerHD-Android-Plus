@@ -370,6 +370,9 @@
     <string name="cache_loading_detail">%1$,d shader variants prepared</string>
     <string name="cache_building">Preparing every shader before the game starts…</string>
     <string name="cache_building_detail">%1$,d of %2$,d pipelines</string>
+    <string name="opt_dynamic_res">Lower the resolution when the phone heats up</string>
+    <string name="opt_dynamic_res_hint">Above 1x: the resolution steps down while the phone is hot (less heat and battery, no throttling) and back up once it cools</string>
+    <string name="dynamic_res_now">Now: %1$sx because of the temperature</string>
     <string name="opt_shaders_at_start">Prepare all shaders at start</string>
     <string name="opt_shaders_at_start_hint">Builds every shader the game has used behind the loading screen: no stutters while playing, a longer load. Takes effect at the next start</string>
     <string name="cheat_moon_jump">Moon jump</string>
