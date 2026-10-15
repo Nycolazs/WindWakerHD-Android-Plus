@@ -164,7 +164,15 @@ final class OptionsMenu extends Dialog {
             case KeyEvent.KEYCODE_BUTTON_SELECT:
                 // held for 0.6 s closes, as it opens; only a fresh press (the one that opened the
                 // menu may still be held, its repeats arrive here)
-                if (e.getRepeatCount() == 0) rows.postDelayed(selectHeld, 600);
+                if (e.getRepeatCount() == 0) {
+                    selectDown = true;
+                    rows.postDelayed(selectHeld, 600);
+                }
+                return true;
+            case KeyEvent.KEYCODE_BUTTON_START:
+                // Select + Start closes, as it opens (a fresh Select press: the one that opened the
+                // menu may still be held)
+                if (e.getRepeatCount() == 0 && selectDown) startCloses = true;
                 return true;
             case KeyEvent.KEYCODE_BUTTON_B: {
                 View f = getCurrentFocus();
@@ -304,11 +312,19 @@ final class OptionsMenu extends Dialog {
     }
 
     private final Runnable selectHeld = this::dismiss;
+    private boolean selectDown, startCloses;
 
     @Override
     public boolean onKeyUp(int code, KeyEvent e) {
         if (code == KeyEvent.KEYCODE_BUTTON_SELECT) {
+            selectDown = false;
             rows.removeCallbacks(selectHeld);
+            return true;
+        }
+        // on release, so it doesn't reach the game screen
+        if (code == KeyEvent.KEYCODE_BUTTON_START) {
+            if (startCloses) dismiss();
+            startCloses = false;
             return true;
         }
         // Home / Guide: on release, so the release doesn't reach the game screen and reopen the menu
@@ -558,6 +574,8 @@ final class OptionsMenu extends Dialog {
         toggle(R.string.opt_aniso, 0, Native.getOption("aniso") != 0, on -> a.setBool("aniso", on));
         toggle(R.string.opt_distant_shadows, R.string.opt_distant_shadows_hint, Native.getOption("distant_shadows") != 0,
                 on -> a.setBool("distant_shadows", on));
+        toggle(R.string.opt_shaders_at_start, R.string.opt_shaders_at_start_hint, a.prefs.getBoolean("shaders_at_start", true),
+                on -> a.prefs.edit().putBoolean("shaders_at_start", on).apply());
         submenu(R.string.opt_perf, R.string.opt_perf_hint, a.getString(a.prefs.getBoolean("perf_hud", false) ? R.string.opt_on : R.string.opt_off),
                 () -> openPage(this::perfPage));
         if (GpuDrivers.supported())

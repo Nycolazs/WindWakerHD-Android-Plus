@@ -16,6 +16,10 @@
     <string name="crash_start_game">Iniciar o jogo</string>
     <string name="cache_loading">Carregando o cache de shaders…</string>
     <string name="cache_loading_detail">%1$,d variantes de shader preparadas</string>
+    <string name="cache_building">Preparando todos os shaders antes de o jogo começar…</string>
+    <string name="cache_building_detail">%1$,d de %2$,d pipelines</string>
+    <string name="opt_shaders_at_start">Preparar todos os shaders ao iniciar</string>
+    <string name="opt_shaders_at_start_hint">Monta todos os shaders que o jogo já usou na tela de carregamento: sem travadinhas durante o jogo, carregamento mais longo. Vale a partir do próximo início</string>
     <string name="crash_not_now">Agora não</string>
     <string name="crash_subject">Registro de travamento do Wind Waker HD</string>
     <string name="motion_source_pad">Agora: os sensores de %1$s</string>
@@ -238,7 +242,7 @@
     <string name="opt_cancel">Cancelar</string>
     <string name="opt_on">SIM</string>
     <string name="opt_off">NÃO</string>
-    <string name="opt_pad_hint">Controle: segure Select ou aperte Home para abrir e fechar · L / R trocam de aba · D-pad navega e muda valores · botão da direita seleciona · botão de baixo volta</string>
+    <string name="opt_pad_hint">Controle: Select + Start, segure Select ou aperte Home para abrir e fechar · L / R trocam de aba · D-pad navega e muda valores · botão da direita seleciona · botão de baixo volta</string>
     <string name="lang_restart">O novo idioma vale quando o jogo reiniciar. O progresso desde o último save é perdido.</string>
     <string name="opt_fps">Taxa de quadros</string>
     <string name="opt_fps_hint">60 fps (gerado): o jogo roda nos seus 30 e cada quadro intermediário é criado pela GPU a partir do último (liso na maioria dos celulares; pode haver pequenos defeitos no HUD e nas bordas da tela). 60 e 120 fps interpolam quadros na CPU e precisam de um celular rápido; quando um quadro não fica pronto a tempo ele é pulado e o jogo mantém a velocidade</string>

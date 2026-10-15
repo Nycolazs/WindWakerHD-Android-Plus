@@ -225,7 +225,7 @@
     <string name="opt_cancel">Cancel</string>
     <string name="opt_on">ON</string>
     <string name="opt_off">OFF</string>
-    <string name="opt_pad_hint">Controller: hold Select or press Home to open and close · L / R switch tabs · D-pad moves and changes values · right button selects · bottom button goes back</string>
+    <string name="opt_pad_hint">Controller: Select + Start, hold Select or press Home to open and close · L / R switch tabs · D-pad moves and changes values · right button selects · bottom button goes back</string>
     <string name="lang_restart">The new language takes effect when the game restarts. Progress since your last save is lost.</string>
     <string name="opt_fps">Frame rate</string>
     <string name="opt_fps_hint">60 fps (generated): the game runs at its own 30 and every other frame is made on the GPU from the last one (smooth on most phones; the HUD and the screen edges may show small artifacts). 60 and 120 fps interpolate frames on the CPU and need a fast phone; where a frame doesn\'t fit in time it is left out and the game keeps its speed</string>
@@ -368,6 +368,10 @@
     <string name="interp_fps">%d fps (interpolated)</string>
     <string name="cache_loading">Loading the shader cache…</string>
     <string name="cache_loading_detail">%1$,d shader variants prepared</string>
+    <string name="cache_building">Preparing every shader before the game starts…</string>
+    <string name="cache_building_detail">%1$,d of %2$,d pipelines</string>
+    <string name="opt_shaders_at_start">Prepare all shaders at start</string>
+    <string name="opt_shaders_at_start_hint">Builds every shader the game has used behind the loading screen: no stutters while playing, a longer load. Takes effect at the next start</string>
     <string name="cheat_moon_jump">Moon jump</string>
     <string name="cheat_moon_jump_hint">Hold L (left shoulder button) to rise, steer with the left stick</string>
     <string name="cheat_moon_rise">Moon jump: rise speed</string>

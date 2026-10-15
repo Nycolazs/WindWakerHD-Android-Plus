@@ -225,7 +225,7 @@
     <string name="opt_cancel">Cancelar</string>
     <string name="opt_on">SÍ</string>
     <string name="opt_off">NO</string>
-    <string name="opt_pad_hint">Mando: mantén Select o pulsa Home para abrir y cerrar · L / R cambian de pestaña · la cruceta mueve y cambia valores · el botón derecho selecciona · el botón inferior vuelve atrás</string>
+    <string name="opt_pad_hint">Mando: Select + Start, mantén Select o pulsa Home para abrir y cerrar · L / R cambian de pestaña · la cruceta mueve y cambia valores · el botón derecho selecciona · el botón inferior vuelve atrás</string>
     <string name="lang_restart">El nuevo idioma se aplica al reiniciar el juego. Se pierde el progreso desde el último guardado.</string>
     <string name="opt_fps">Fotogramas por segundo</string>
     <string name="opt_fps_hint">60 fps (generados): el juego corre a sus 30 y cada dos fotogramas se crea uno en la GPU a partir del anterior (fluido en la mayoría de móviles; el HUD y los bordes de la pantalla pueden mostrar pequeños artefactos). 60 y 120 fps interpolan fotogramas en la CPU y necesitan un móvil rápido; cuando un fotograma no llega a tiempo se omite y el juego mantiene su velocidad</string>
@@ -456,6 +456,10 @@
     <string name="crash_start_game">Iniciar el juego</string>
     <string name="cache_loading">Cargando la caché de shaders…</string>
     <string name="cache_loading_detail">%1$,d variantes de shader preparadas</string>
+    <string name="cache_building">Preparando todos los shaders antes de que empiece el juego…</string>
+    <string name="cache_building_detail">%1$,d de %2$,d pipelines</string>
+    <string name="opt_shaders_at_start">Preparar todos los shaders al iniciar</string>
+    <string name="opt_shaders_at_start_hint">Prepara todos los shaders que el juego ya usó en la pantalla de carga: sin tirones al jugar, una carga más larga. Se aplica en el próximo inicio</string>
     <string name="crash_not_now">Ahora no</string>
     <string name="crash_subject">Registro de fallo de Wind Waker HD</string>
     <string name="opt_quit">Salir</string>

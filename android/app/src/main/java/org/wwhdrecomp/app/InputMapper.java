@@ -192,13 +192,31 @@ final class InputMapper {
         return true;
     }
 
-    private static float axis(MotionEvent e, InputDevice dev, int axis) {
-        InputDevice.MotionRange r = dev.getMotionRange(axis, e.getSource());
-        if (r == null) return 0;
-        float v = e.getAxisValue(axis);
-        float flat = Math.max(r.getFlat(), 0.12f);
-        if (Math.abs(v) < flat) return 0;
-        return Math.max(-1f, Math.min(1f, (v - Math.signum(v) * flat) / (1f - flat)));
+    // How far each stick reaches in each direction (per controller and axis): some sticks stop short
+    // of their reported range on one side (a Retroid Pocket 6 reaches about 0.85 pushed up), and the
+    // game only runs with the stick all the way out. A direction counts as full from 92% of its
+    // range, or from the furthest it has been pushed if that is less (at least 75%).
+    private final java.util.Map<String, float[]> reach = new java.util.HashMap<>();
+    private static final float REACH_FLOOR = 0.75f, OUTER = 0.92f, INNER = 0.12f;
+
+    /** a stick's two axes: dead zone in the middle, the direction's reach as full, within the circle */
+    private float[] stick(MotionEvent e, InputDevice dev, int ax, int ay) {
+        InputDevice.MotionRange rx = dev.getMotionRange(ax, e.getSource()), ry = dev.getMotionRange(ay, e.getSource());
+        if (rx == null || ry == null) return new float[2];
+        float x = e.getAxisValue(ax), y = e.getAxisValue(ay);
+        String key = dev.getDescriptor() + "/" + ax + "/" + ay;
+        float[] r = reach.get(key);  // furthest seen: -x, +x, -y, +y
+        if (r == null) reach.put(key, r = new float[] {REACH_FLOOR, REACH_FLOOR, REACH_FLOOR, REACH_FLOOR});
+        int ix = x < 0 ? 0 : 1, iy = y < 0 ? 2 : 3;
+        r[ix] = Math.max(r[ix], Math.abs(x));
+        r[iy] = Math.max(r[iy], Math.abs(y));
+        // each side scaled so that its reach (at most 92% of the range) is 1
+        x /= Math.min(r[ix], OUTER * (x < 0 ? -rx.getMin() : rx.getMax()));
+        y /= Math.min(r[iy], OUTER * (y < 0 ? -ry.getMin() : ry.getMax()));
+        float m = (float) Math.hypot(x, y), flat = Math.max(Math.max(rx.getFlat(), ry.getFlat()), INNER);
+        if (m < flat) return new float[2];
+        float k = Math.min(1f, (m - flat) / (1f - flat)) / m;
+        return new float[] {x * k, y * k};
     }
 
     // which axes are the right stick and the triggers, per controller (kept: devices don't change)
@@ -261,14 +279,16 @@ final class InputMapper {
     boolean onMotion(MotionEvent e) {
         InputDevice dev = e.getDevice();
         if (!isController(dev) || e.getAction() != MotionEvent.ACTION_MOVE) return false;
-        lx = axis(e, dev, MotionEvent.AXIS_X);
-        ly = -axis(e, dev, MotionEvent.AXIS_Y);
+        float[] ls = stick(e, dev, MotionEvent.AXIS_X, MotionEvent.AXIS_Y);
+        lx = ls[0];
+        ly = -ls[1];
         // right stick: Z/RZ (Xbox, DualSense and others with a key layout) or RX/RY (generic HID:
         // 8BitDo in DInput / Switch mode, DualSense without a layout), where Z/RZ are the triggers.
         // A trigger axis rests at its minimum (range 0..1 or -1..1 resting at -1); a stick centres at 0.
         Layout l = layout(dev, e);
-        rx = axis(e, dev, l.rx);
-        ry = -axis(e, dev, l.ry);
+        float[] rs = stick(e, dev, l.rx, l.ry);
+        rx = rs[0];
+        ry = -rs[1];
         // analog triggers (controllers without L2/R2 key events) as L2 / R2
         if (l.lt != 0) press(KeyEvent.KEYCODE_BUTTON_L2, trigger(e, dev, l.lt) > 0.5f);
         if (l.rt != 0) press(KeyEvent.KEYCODE_BUTTON_R2, trigger(e, dev, l.rt) > 0.5f);

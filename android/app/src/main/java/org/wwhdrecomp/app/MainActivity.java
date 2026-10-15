@@ -109,6 +109,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             setenv("WWHD_LANGUAGE", gameLanguage());
             applyFrameGenSettings();
             setenv("WWHD_APP_VERSION", CrashLogs.appVersion(this));  // the crash log's name
+            // every cached shader and pipeline built behind the loading screen (on by default)
+            setenv("WWHD_SHADERS_AT_START", prefs.getBoolean("shaders_at_start", true) ? "1" : "0");
             // command recording thread: automatic (the renderer decides), on or off (wwhd.env still wins)
             int recordThread = prefs.getInt("record_thread", 0);
             if (recordThread != 0) setenv("WWHD_RECORD_THREAD", recordThread == 1 ? "1" : "0");
@@ -780,15 +782,21 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                     root.removeView(screen);
                     return;
                 }
-                // only while a cache file is replayed (state 1 with a size), not while the game boots
-                if (screen.getVisibility() != View.VISIBLE && p[0] == 1 && p[2] > 0
+                // only while a cache file is replayed (state 1 with a size) or its pipelines are
+                // built (3), not while the game boots
+                if (screen.getVisibility() != View.VISIBLE && (p[0] == 1 || p[0] == 3) && p[2] > 0
                         && android.os.SystemClock.uptimeMillis() - t0 > 300)
                     screen.setVisibility(View.VISIBLE);
                 if (p[2] > 0) {
                     bar.setProgress((int) Math.min(1000, p[1] * 1000 / p[2]));
                     mySea.setProgress(Math.min(1f, (float) p[1] / p[2]));
                 }
-                detail.setText(getString(R.string.cache_loading_detail, (int) p[3]));
+                if (p[0] == 3) {
+                    t.setText(R.string.cache_building);
+                    detail.setText(getString(R.string.cache_building_detail, (int) p[1], (int) p[2]));
+                } else {
+                    detail.setText(getString(R.string.cache_loading_detail, (int) p[3]));
+                }
                 h.postDelayed(this, 150);
             }
         });
@@ -1231,6 +1239,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             selectButton(e);
             return true;
         }
+        if (controller && code == KeyEvent.KEYCODE_BUTTON_START && startButton(e)) return true;
         if (controller && code == KeyEvent.KEYCODE_BUTTON_MODE) {  // Home / Guide, where the system passes it on
             if (e.getAction() == KeyEvent.ACTION_UP) onMenu();
             return true;
@@ -1243,8 +1252,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         return super.dispatchKeyEvent(e);
     }
 
-    // A controller's Select (View): held for 0.6 s it opens the menu, a shorter press is the game's
-    // - button (sent on release, held for a few frames so the game sees it)
+    // A controller's Select (View): held for 0.6 s (or with Start) it opens the menu, a shorter press
+    // is the game's - button (sent on release, held for a few frames so the game sees it)
     private static final long SELECT_HOLD_MS = 600;
     private final android.os.Handler keyHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private boolean selectDown, selectOpenedMenu;
@@ -1254,12 +1263,48 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         onMenu();
     };
 
+    // Select + Start (either first) opens the menu too: Start pressed while Select is held never
+    // reaches the game; Select pressed while Start is held opens it at once
+    private boolean startDown, startForMenu;
+
+    private void menuFromCombo() {
+        keyHandler.removeCallbacks(selectHeld);
+        selectOpenedMenu = true;
+        startDown = false;  // its release goes to the menu
+        onMenu();
+    }
+
+    /** true if the Start event is the menu shortcut's (not for the game) */
+    private boolean startButton(KeyEvent e) {
+        if (e.getAction() == KeyEvent.ACTION_DOWN) {
+            if (e.getRepeatCount() > 0) return startForMenu;
+            startDown = true;
+            startForMenu = selectDown;
+            if (startForMenu) {
+                controllerUsed(e.getDevice());
+                menuFromCombo();
+            }
+            return startForMenu;
+        }
+        if (e.getAction() == KeyEvent.ACTION_UP) {
+            startDown = false;
+            boolean ours = startForMenu;
+            startForMenu = false;
+            return ours;
+        }
+        return startForMenu;
+    }
+
     private void selectButton(KeyEvent e) {
         controllerUsed(e.getDevice());
         if (e.getAction() == KeyEvent.ACTION_DOWN) {
             if (e.getRepeatCount() > 0) return;
             selectDown = true;
             selectOpenedMenu = false;
+            if (startDown) {
+                menuFromCombo();
+                return;
+            }
             keyHandler.postDelayed(selectHeld, SELECT_HOLD_MS);
         } else if (e.getAction() == KeyEvent.ACTION_UP) {
             // the press must have been ours: holding Select also closes the menu, and that release
@@ -1555,10 +1600,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     private static byte[] readAll(android.content.ContentResolver cr, android.net.Uri u) throws IOException {
         try (InputStream in = cr.openInputStream(u)) {
             if (in == null) throw new IOException("cannot read " + u);
-            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
-            byte[] buf = new byte[4096];
-            for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
-            return out.toByteArray();
+            return Translation.readStream(in);
         }
     }
 

@@ -164,8 +164,16 @@ final class Translation {
 
     private static byte[] readAsset(Context c, String name) throws IOException {
         try (InputStream in = c.getAssets().open(name)) {
-            return in.readAllBytes();
+            return readStream(in);
         }
+    }
+
+    // (InputStream.readAllBytes is Android 13+: the app runs from Android 11)
+    static byte[] readStream(InputStream in) throws IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[16384];
+        for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+        return out.toByteArray();
     }
 
     private static String rawLabel(File dir) {
@@ -203,7 +211,7 @@ final class Translation {
     private static String rulesLabel(ContentResolver cr, Uri uri) {
         try (InputStream in = cr.openInputStream(uri)) {
             if (in == null) return "";
-            String s = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            String s = new String(readStream(in), java.nio.charset.StandardCharsets.UTF_8);
             for (String line : s.split("\n")) {
                 line = line.trim();
                 if (line.startsWith("path")) {

@@ -52,9 +52,30 @@ final class MotionInput implements SensorEventListener {
         haveAcc = false;
         lastGyroNs = 0;
         android.util.Log.i("wwhd", "motion from " + (fromController ? c.getName() : "this device") + ": " + g.getName());
+        gyroSamples = 0;
+        gyroMoved = false;
         sensors.registerListener(this, a, SensorManager.SENSOR_DELAY_GAME, handler);
         sensors.registerListener(this, g, SensorManager.SENSOR_DELAY_GAME, handler);
         running = true;
+        if (fromController) handler.postDelayed(watchdog, 2000);
+    }
+
+    // Some controllers report motion sensors that never send anything, or only zeros (generic
+    // gamepads and handheld grips with an accelerometer entry in their HID descriptor): after 2 s
+    // without a live gyro the device's own sensors take over, and that controller counts as having
+    // none from then on.
+    private static final java.util.Set<String> deadSensors = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private volatile int gyroSamples;
+    private volatile boolean gyroMoved;
+    private final Runnable watchdog = this::checkLive;
+
+    private void checkLive() {
+        InputDevice c = controller;
+        if (!running || !fromController || c == null || (gyroSamples > 0 && gyroMoved)) return;
+        android.util.Log.i("wwhd", "motion: " + c.getName() + " sent " + (gyroSamples == 0 ? "no samples" : "only zeros")
+                + "; this device's sensors instead");
+        deadSensors.add(c.getDescriptor());
+        activity.runOnUiThread(() -> start(c));
     }
 
     /** where the motion comes from now: the controller's name, "" for this device, null if off */
@@ -64,13 +85,14 @@ final class MotionInput implements SensorEventListener {
     boolean fromController() { return running && fromController; }
 
     void stop() {
+        if (handler != null) handler.removeCallbacks(watchdog);
         if (!running) return;
         running = false;
         if (sensors != null) sensors.unregisterListener(this);
         Native.motionReset();
     }
 
-    static boolean hasMotion(InputDevice d) { return hasGyro(controllerSensors(d)); }
+    static boolean hasMotion(InputDevice d) { return d != null && !deadSensors.contains(d.getDescriptor()) && hasGyro(controllerSensors(d)); }
 
     // A controller's motion sensors: on the controller's own input device, or (the kernel's
     // hid-playstation, hid-sony and hid-nintendo drivers) on a separate "... Motion Sensors" device
@@ -109,7 +131,10 @@ final class MotionInput implements SensorEventListener {
             haveAcc = true;
             return;
         }
-        if (e.sensor.getType() != Sensor.TYPE_GYROSCOPE || !haveAcc) return;
+        if (e.sensor.getType() != Sensor.TYPE_GYROSCOPE) return;
+        gyroSamples++;
+        if (e.values[0] != 0 || e.values[1] != 0 || e.values[2] != 0) gyroMoved = true;
+        if (!haveAcc) return;
         float dt = lastGyroNs != 0 ? (e.timestamp - lastGyroNs) * 1e-9f : 0;
         lastGyroNs = e.timestamp;
         if (dt <= 0) return;
