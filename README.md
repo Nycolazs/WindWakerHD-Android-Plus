@@ -54,7 +54,36 @@ Get the latest APK from the **[Releases page](../../releases/latest)**.
 
 ## What's new in Plus
 
-### 🆕 New in v1.8: autosave, Spanish menus, any translation
+### 🆕 New in v1.9: no more closing between areas, shaders ready before you play, a cooler phone
+- **No more "crashes" when going from one area to another**: the game's GPU memory grew with every
+  area visited (textures were never freed) until Android closed the game for low memory, without
+  a crash log. Textures the game no longer uses are freed now, and upload memory is given back:
+  on a Galaxy S20 FE, 44 areas in a row end at ~1.6 GB instead of being closed past 2.4 GB.
+- **Every shader prepared behind the loading screen** (**Graphics → Prepare all shaders at
+  start**, on by default): the pipelines your cache knows are built before the game starts instead
+  of a few per frame while you play, which caused stutters for the first minutes.
+- **A much lighter shader cache**: the same shader was kept as hundreds of thousands of variants.
+  The first start after updating compacts it once (on the test phone: 335 MB → 11 MB, loading
+  17-24 s → under a second, ~550 MB less memory), and an area you visited before no longer
+  translates hundreds of shaders as you enter it (100-450 ms hitches).
+- **Lower resolution when the phone gets hot** (**Graphics**, on by default): above 1x, the
+  resolution steps down while the phone is hot and returns when it cools (Windfall at 1.5x on a hot
+  S20 FE: GPU busy 81% → 56%). Less heat, less battery, no throttling.
+- **Save states survive updates and frame rate changes**: states saved by another version or
+  session failed with "host function ... is not registered at the same address". Older states
+  load now too.
+- **Autosave without the pause in the middle of the action**: it waits for a menu, a dialogue or
+  the moment after entering an area.
+- **Controllers**:
+  - **Select + Start** opens and closes the options menu.
+  - Sticks that don't reach the edge of their range (Retroid Pocket 6 pushed up) now make Link run
+    (#12).
+  - A controller that reports motion sensors but sends nothing: the phone's gyro is used.
+- **Android 11 and 12**: the app no longer closes at start (#11, Huawei MatePad).
+- From the original project: a shader translation reserves 1 MB instead of 12 MB, and an
+  allocation failure there no longer crashes.
+
+### 🌐 New in v1.8: autosave, Spanish menus, any translation
 - **Autosave** (**Options → Saves → Autosave**): an **Auto** save-state slot, above slot 1, written
   every 1, 2, 5 or 10 minutes while you play a save file. Off by default. By
   [jaimepa17](https://github.com/jaimepa17) (#7).
@@ -345,7 +374,7 @@ ANDROID_NDK=$HOME/Android/Sdk/ndk/27.2.12479018 tools/android/build-llvm.sh
 
 cd android
 echo "sdk.dir=$HOME/Android/Sdk" > local.properties
-./gradlew assembleRelease -PwwhdDeviceRecomp -PwwhdVersionCode=14 -PwwhdVersionName=1.8
+./gradlew assembleRelease -PwwhdDeviceRecomp -PwwhdVersionCode=15 -PwwhdVersionName=1.9
 ```
 
 The APK is in `android/app/build/outputs/apk/release/`. Sign APKs you share with your own key
