@@ -55,6 +55,7 @@
 
 #include "runtime.h"
 #include "input.h"
+#include "interp.h"
 #include "mem_writes.h"
 #include "mods/mods.h"
 #include "release.h"
@@ -1025,20 +1026,34 @@ void service(Cpu* c) {
         last = f;
     }
     // autosave: snapshot into kAutoSlot every g_autosave_secs, only while a file is actually being
-    // played (not the title / file select) and nothing else is saving or loading
+    // played (not the title / file select) and nothing else is saving or loading. A snapshot holds
+    // the game for ~0.5 s: once due it waits for a moment where that isn't felt (a game menu open,
+    // a dialogue, or 2-6 s after entering another area or room), at most another interval.
     {
-        static std::chrono::steady_clock::time_point last;
+        using clk = std::chrono::steady_clock;
+        static clk::time_point last, areaSince;
+        static std::string area;
         const int secs = g_autosave_secs.load();
-        const auto now = std::chrono::steady_clock::now();
+        const auto now = clk::now();
         if (secs <= 0) {
-            last = std::chrono::steady_clock::time_point{};
+            last = clk::time_point{};
         } else {
-            if (last == std::chrono::steady_clock::time_point{}) last = now;
+            if (last == clk::time_point{}) last = now;
             const uint32_t addr = mods::save_addr();
             const bool playing = addr >= 0x10000000u && mods::save_loaded(addr);
+            std::string here = stage_name() + ":" + std::to_string((int)(int8_t)ld8(kStageInfo + kStageNameOff + 10));
+            if (here != area) {
+                area = here;
+                areaSince = now;
+            }
             if (playing && !g_save_req.load() && !g_loading.load() && now - last >= std::chrono::seconds(secs)) {
-                last = now;
-                request_save(kAutoSlot);
+                const auto inArea = now - areaSince;
+                const bool calm = interp::menu_open() || mods::event_mode_now() == 1 ||
+                                  (inArea >= std::chrono::seconds(2) && inArea < std::chrono::seconds(6));
+                if (calm || now - last >= std::chrono::seconds(2 * secs)) {
+                    last = now;
+                    request_save(kAutoSlot);
+                }
             }
         }
     }
