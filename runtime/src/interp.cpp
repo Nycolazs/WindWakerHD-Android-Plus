@@ -927,8 +927,11 @@ static void paced_pass_start() {
     }
     g_step_drew = false;
     // a step: two virtual vsyncs (the game's swap interval), on the clock the flips follow (it is
-    // locked to the display): a fixed 33.333 ms drifted against it (ZeldaWWHDRecomp, issue #164)
-    const auto step = std::chrono::nanoseconds(2 * paced_vsync_ns());
+    // locked to the display): a fixed 33.333 ms drifted against it (ZeldaWWHDRecomp, issue #164).
+    // At 120/240 fps that clock runs 2/4 times as fast (gx2_display_vsync): two of its vsyncs were
+    // 16.7 / 8.3 ms, so whenever in-between frames were left out the logic passes followed each other
+    // that fast and the game ran up to twice (four times) its speed. Two vsyncs at the game's rate.
+    const auto step = std::chrono::nanoseconds(2 * paced_vsync_ns() * std::max(1, vsync_rate()));
     if (g_wait_step && now < g_last_logic + step) {
         const auto due = g_last_logic + step;
         threads::park_sleep_until(due);  // the game keeps 30 steps a second

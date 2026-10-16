@@ -92,6 +92,21 @@ PadState read(bool consume) {
             else { s.lx = 1.0f; s.rx = 1.0f; }
         }
     }
+    // test aid: WWHD_TEST_TURN=s,speed walks Link forward with the camera turning at `speed` (right
+    // stick, -1..1) from s seconds after the start (60 fps generated: fast camera turns)
+    static const double turnAt = getenv("WWHD_TEST_TURN") ? atof(getenv("WWHD_TEST_TURN")) : -1;
+    static const float turnSpeed = [] {
+        const char* e = getenv("WWHD_TEST_TURN");
+        const char* c = e ? strchr(e, ',') : nullptr;
+        return c ? (float)atof(c + 1) : 1.0f;
+    }();
+    if (turnAt >= 0) {
+        static const auto t0 = std::chrono::steady_clock::now();
+        if (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() >= turnAt) {
+            s.ly = 0.6f;
+            s.rx = turnSpeed;
+        }
+    }
     s.touch = g_touch || g_touch_latched;
     g_touch_latched = false;
     s.tx = g_tx;

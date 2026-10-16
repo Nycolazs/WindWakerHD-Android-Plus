@@ -124,7 +124,11 @@ void crash_log_details() {
     }
 }
 
+extern "C" void wwhd_compile_journal_on_crash() __attribute__((weak));  // vk/vk_draw.cpp
+
 static void crash_handler(int sig, siginfo_t* si, void* uctx) {
+    // a crash while compiling a shader or pipeline: noted so the next start leaves it out
+    if (wwhd_compile_journal_on_crash) wwhd_compile_journal_on_crash();
     uintptr_t a = (uintptr_t)si->si_addr;
     uintptr_t base = (uintptr_t)PPC_MEM_BASE;
     crash_log_open();

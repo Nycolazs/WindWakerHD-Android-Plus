@@ -169,6 +169,19 @@ static float target_scale(const Surface* s) {
     return (postFormats & bit) ? std::min(r, 1.0f) : r;
 }
 
+// The game's shadow map, a square depth array of its 3 cascades (1024x1024 D16 on the TV): its own
+// scale for tests (WWHD_SHADOW_SCALE, applied as the game creates it). Its passes are bound by their
+// draws (3 x ~380 casters), not their pixels: on an Adreno 650 half size saved 0.16 ms of a 20 ms
+// frame for blockier shadow edges, so it is no setting. Draws into it scale their viewport and
+// scissor by the image's own size (vk_draw.cpp), and the game samples it with normalized coordinates.
+static bool shadow_map(const Surface* s) {
+    return s->isDepth && s->slices == 3 && s->width == s->height && s->width >= 512;
+}
+static float shadow_scale() {
+    static const float v = env_scale("WWHD_SHADOW_SCALE", 1.0f, 0.25f, 1.0f);
+    return v;
+}
+
 Surface* rescaled(Surface* s) {
     if (!s || !s->img.image || s->img.type != VK_IMAGE_TYPE_2D || s->mips > 1 || !screen_shaped(s)) return s;
     float want = target_scale(s), ax, ay;
@@ -240,6 +253,13 @@ bool create_surface_image(Surface* s, bool forRendering) {
         s->rscale = target_scale(s);
         w = std::max<uint32_t>(1, (uint32_t)lroundf(s->width * s->rscale * s->ax));
         h = std::max<uint32_t>(1, (uint32_t)lroundf(s->height * s->rscale * s->ay));
+    } else if (forRendering && type == VK_IMAGE_TYPE_2D && shadow_map(s) && shadow_scale() < 1.0f) {
+        s->rscale = shadow_scale();
+        w = std::max<uint32_t>(1, (uint32_t)lroundf(s->width * s->rscale));
+        h = std::max<uint32_t>(1, (uint32_t)lroundf(s->height * s->rscale));
+        static bool logged = false;
+        if (!logged) LOG("[gfx] shadow map %ux%u drawn at %ux%u", s->width, s->height, w, h);
+        logged = true;
     }
     // a mip chain can't be longer than the size allows
     uint32_t maxMips = 1;

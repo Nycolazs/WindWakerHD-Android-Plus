@@ -370,9 +370,9 @@
     <string name="cache_loading_detail">%1$,d shader variants prepared</string>
     <string name="cache_building">Preparing every shader before the game starts…</string>
     <string name="cache_building_detail">%1$,d of %2$,d pipelines</string>
-    <string name="opt_dynamic_res">Lower the resolution when the phone heats up</string>
-    <string name="opt_dynamic_res_hint">Above 1x: the resolution steps down while the phone is hot (less heat and battery, no throttling) and back up once it cools</string>
-    <string name="dynamic_res_now">Now: %1$sx because of the temperature</string>
+    <string name="opt_dynamic_res">Dynamic resolution</string>
+    <string name="opt_dynamic_res_hint">Lowers the 3D resolution while the GPU can\'t keep up (to 0.6x, so weak phones keep their frame rate) or the phone is hot (to 1x), and raises it back when there is room again</string>
+    <string name="dynamic_res_now">Now: %1$sx (GPU load or temperature)</string>
     <string name="opt_shaders_at_start">Prepare all shaders at start</string>
     <string name="opt_shaders_at_start_hint">Builds every shader the game has used behind the loading screen: no stutters while playing, a longer load. Takes effect at the next start</string>
     <string name="cheat_moon_jump">Moon jump</string>
@@ -491,4 +491,34 @@
         <item>Centre + noise fix</item>
         <item>Off</item>
     </string-array>
+    <!-- SaveVault: saves kept outside the app -->
+    <string name="vault_title">Keep your saves safe</string>
+    <string name="vault_message">Allow \"All files access\" and the app keeps a copy of your game save, your save states and your settings in the \"%1$s\" folder on your phone. It stays there when the app is uninstalled or updated, and a new install brings everything back by itself.</string>
+    <string name="vault_message_new">There is no game save yet. If you played before, allow \"All files access\" and the app brings back your game save, save states and settings from the \"%1$s\" folder (or from the automatic backups in Downloads) by itself, and keeps them there from now on, so an update never loses them.</string>
+    <string name="vault_later">Not now</string>
+    <string name="vault_allow">Allow</string>
+    <string name="vault_on_toast">Your saves are now kept in the \"%1$s\" folder too</string>
+    <string name="vault_restored_title">Your saves are back</string>
+    <string name="vault_restoring">Bringing your saves back…</string>
+    <string name="vault_part_save">your game save</string>
+    <string name="vault_part_settings">your settings</string>
+    <string name="vault_restored">Brought back from \"%2$s\": %1$s.</string>
+    <string name="vault_restart">The settings take effect after a restart.</string>
+    <string name="opt_vault">Saves outside the app</string>
+    <string name="opt_vault_hint">Off: allow \"All files access\" to keep a copy in the \"%1$s\" folder that survives updates and reinstalls</string>
+    <string name="opt_vault_hint_on">Your game save, save states and settings are copied to the \"%1$s\" folder as they change; a new install brings them back by itself</string>
+    <string name="vault_about_on">Your game save, save states and settings are copied to the \"%1$s\" folder on your phone as they change. After uninstalling or updating the app, the new install brings them back by itself when it starts without a game save. Don\'t delete that folder.</string>
+    <string name="language_ptbr">Português (Brasil)</string>
+    <plurals name="vault_part_states">
+        <item quantity="one">%d save state</item>
+        <item quantity="other">%d save states</item>
+    </plurals>
+    <!-- light graphics -->
+    <string name="opt_light">Graphics</string>
+    <string name="opt_light_hint">Light: for weaker GPUs. No ambient occlusion and no distant shadows</string>
+    <string-array name="light_modes">
+        <item>Quality</item>
+        <item>Light</item>
+    </string-array>
+    <string name="pro_touch_hint">To tap the menus, set the controls to %1$s (Options)</string>
 </resources>

@@ -436,12 +436,35 @@ void crumbs_report() {
     }
 }
 
+// WWHD_GPU_PROFILE: how many of each command the replayed streams hold (state changes per draw)
+static uint64_t g_op_counts[64];
+static uint64_t g_op_streams;
+void report_op_counts() {
+    static const bool on = getenv("WWHD_GPU_PROFILE") != nullptr;
+    if (!on || !g_op_streams) return;
+    static const char* names[] = {"BeginRenderPass", "EndRenderPass", "BindPipeline", "BindDescriptorSets", "BindVertexBuffers",
+                                  "BindIndexBuffer", "SetViewport", "SetScissor", "SetBlendConstants", "SetDepthBias",
+                                  "SetStencilCompareMask", "SetStencilReference", "SetStencilWriteMask", "PushConstants", "Draw",
+                                  "DrawIndexed", "Dispatch", "PipelineBarrier", "CopyImage", "CopyImage2", "BlitImage",
+                                  "CopyBufferToImage", "CopyImageToBuffer", "ClearColorImage", "ClearDepthStencilImage",
+                                  "ResetQueryPool", "WriteTimestamp"};
+    char buf[1024];
+    int n = 0;
+    for (int i = 0; i < (int)(sizeof names / sizeof names[0]); i++)
+        if (g_op_counts[i]) n += snprintf(buf + n, sizeof buf - n, " %s=%llu", names[i], (unsigned long long)g_op_counts[i]);
+    LOG("[rec] commands in %llu streams:%s", (unsigned long long)g_op_streams, buf);
+    memset(g_op_counts, 0, sizeof g_op_counts);
+    g_op_streams = 0;
+}
+
 void replay(const Stream& stream, VkCommandBuffer cmd) {
     const bool crumbs = crumbs_enabled();
     if (crumbs) g_crumb_stream++;
+    g_op_streams++;
     size_t at = 0;
     while (at < stream.data.size()) {
         Header h; memcpy(&h, stream.data.data() + at, sizeof(h));
+        if ((unsigned)h.op < 64) g_op_counts[(unsigned)h.op]++;
         Reader r{stream.data.data() + at, sizeof(Header)};
         switch (h.op) {
         case Op::BeginRenderPass: { auto v = r.get<VkRenderPassBeginInfo>(); auto c = r.get<VkSubpassContents>();

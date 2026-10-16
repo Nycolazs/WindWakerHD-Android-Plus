@@ -18,9 +18,9 @@
     <string name="cache_loading_detail">%1$,d variantes de shader preparadas</string>
     <string name="cache_building">Preparando todos os shaders antes de o jogo começar…</string>
     <string name="cache_building_detail">%1$,d de %2$,d pipelines</string>
-    <string name="opt_dynamic_res">Baixar a resolução quando o celular esquentar</string>
-    <string name="opt_dynamic_res_hint">Acima de 1x: a resolução diminui enquanto o celular está quente (menos calor e bateria, sem perda de desempenho por aquecimento) e volta quando ele esfria</string>
-    <string name="dynamic_res_now">Agora: %1$sx por causa da temperatura</string>
+    <string name="opt_dynamic_res">Resolução dinâmica</string>
+    <string name="opt_dynamic_res_hint">Baixa a resolução 3D enquanto a GPU não dá conta (até 0,6x, para celulares mais simples manterem a taxa de quadros) ou o celular está quente (até 1x), e volta quando sobra folga</string>
+    <string name="dynamic_res_now">Agora: %1$sx (carga da GPU ou temperatura)</string>
     <string name="opt_shaders_at_start">Preparar todos os shaders ao iniciar</string>
     <string name="opt_shaders_at_start_hint">Monta todos os shaders que o jogo já usou na tela de carregamento: sem travadinhas durante o jogo, carregamento mais longo. Vale a partir do próximo início</string>
     <string name="crash_not_now">Agora não</string>
@@ -484,4 +484,34 @@
         <item>Correção central + ruído</item>
         <item>Desligada</item>
     </string-array>
+    <!-- SaveVault: saves kept outside the app -->
+    <string name="vault_title">Proteger seus saves</string>
+    <string name="vault_message">Permita o \"Acesso a todos os arquivos\" e o app guarda uma cópia do seu save, dos save states e das configurações na pasta \"%1$s\" do celular. Ela continua lá quando o app é desinstalado ou atualizado, e uma nova instalação traz tudo de volta sozinha.</string>
+    <string name="vault_message_new">Ainda não há um save do jogo. Se você já jogou antes, permita o \"Acesso a todos os arquivos\" e o app traz de volta sozinho seu save, os save states e as configurações da pasta \"%1$s\" (ou dos backups automáticos em Downloads), e daqui pra frente os mantém lá, para nenhuma atualização perder nada.</string>
+    <string name="vault_later">Agora não</string>
+    <string name="vault_allow">Permitir</string>
+    <string name="vault_on_toast">Seus saves agora também ficam na pasta \"%1$s\"</string>
+    <string name="vault_restored_title">Seus saves voltaram</string>
+    <string name="vault_restoring">Trazendo seus saves de volta…</string>
+    <string name="vault_part_save">seu save do jogo</string>
+    <string name="vault_part_settings">suas configurações</string>
+    <string name="vault_restored">Recuperado de \"%2$s\": %1$s.</string>
+    <string name="vault_restart">As configurações passam a valer depois de reiniciar.</string>
+    <string name="opt_vault">Saves fora do app</string>
+    <string name="opt_vault_hint">Desligado: permita o \"Acesso a todos os arquivos\" para manter uma cópia na pasta \"%1$s\", que sobrevive a atualizações e reinstalações</string>
+    <string name="opt_vault_hint_on">Seu save, os save states e as configurações são copiados para a pasta \"%1$s\" conforme mudam; uma nova instalação os traz de volta sozinha</string>
+    <string name="vault_about_on">Seu save, os save states e as configurações são copiados para a pasta \"%1$s\" do celular conforme mudam. Depois de desinstalar ou atualizar o app, a nova instalação os traz de volta sozinha quando começa sem save. Não apague essa pasta.</string>
+    <string name="language_ptbr">Português (Brasil)</string>
+    <plurals name="vault_part_states">
+        <item quantity="one">%d save state</item>
+        <item quantity="other">%d save states</item>
+    </plurals>
+    <!-- light graphics -->
+    <string name="opt_light">Gráficos</string>
+    <string name="opt_light_hint">Leve: para GPUs mais fracas. Sem oclusão de ambiente e sem sombras distantes</string>
+    <string-array name="light_modes">
+        <item>Qualidade</item>
+        <item>Leve</item>
+    </string-array>
+    <string name="pro_touch_hint">Para tocar nos menus, mude os controles para %1$s (Opções)</string>
 </resources>

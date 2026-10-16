@@ -20,9 +20,11 @@
     <!-- RotationGuard: locks the rotation to landscape while playing where the system ignores the
          activity's orientation; the user grants it ("Modify system settings") -->
     <uses-permission android:name="android.permission.WRITE_SETTINGS" tools:ignore="ProtectedPermissions" />
+    <!-- SaveVault: the saves, save states and settings kept in "WindWakerHD Plus" on the phone's
+         storage, which survives uninstalling the app; a new install reads them back. The user grants
+         it ("All files access"); without it the saves stay in the app's own folder. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
     <!-- rumble on this device while playing by touch -->
-    <uses-permission android:name="android.permission.VIBRATE" />
-
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <application

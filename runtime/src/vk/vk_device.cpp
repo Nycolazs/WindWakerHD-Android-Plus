@@ -638,10 +638,32 @@ static VkAccessFlags use_accesses(Use u) {
     }
 }
 
+void flush_pending_clear(Image& img) {
+    const uint32_t layers = img.pendingClearLayers;
+    if (!layers || !img.image) return;
+    img.pendingClearLayers = 0;
+    prepare(img, Use::COPY_DST);
+    VkCommandBuffer cmd = command_buffer();
+    for (uint32_t first = 0; first < 32 && first < img.layers; first++) {
+        if (!(layers >> first & 1)) continue;
+        uint32_t n = 1;
+        while (first + n < 32 && first + n < img.layers && (layers >> (first + n) & 1)) n++;
+        VkImageSubresourceRange range{img.pendingClearAspect, 0, 1, first, n};
+        if (img.pendingClearAspect & VK_IMAGE_ASPECT_COLOR_BIT)
+            vkCmdClearColorImage(cmd, img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &img.pendingClearValue.color, 1, &range);
+        else
+            vkCmdClearDepthStencilImage(cmd, img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &img.pendingClearValue.depthStencil, 1, &range);
+        first += n - 1;
+    }
+}
+
 void prepare(Image& img, Use use) {
     if (!img.image) return;
+    if (img.pendingClearLayers) flush_pending_clear(img);
     // render passes order attachment writes among themselves (subpass dependencies); reads after reads need nothing
     if (img.use == use && (use == Use::SAMPLED || use == Use::COLOR || use == Use::DEPTH)) return;
+    if (R.pass && log_this_frame())
+        LOG("[pass] ends: image %ux%u fmt %d use %d -> %d", img.width, img.height, (int)img.format, (int)img.use, (int)use);
     end_pass();
     VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     const bool broad = broad_barriers();
@@ -1424,6 +1446,9 @@ void fit(const ScreenRect& r, float a, float out[4], VkExtent2D ext, int mode = 
     float W = (float)ext.width, H = (float)ext.height;
     float x = r.x, y = r.y, w = r.w, h = r.h;
     if (w <= 0 || h <= 0) { x = 0; y = 0; w = W; h = H; }
+    // a picture within 1% of the rect's shape fills it: the widened picture's size is rounded to
+    // whole pixels (2398 x 1080 in a 2400 x 1080 window), which left 1-pixel bars at the sides
+    if (std::fabs(w / h - a) < 0.01f * a) mode = 1;
     bool wider = w / h > a;
     if (mode == 0 ? wider : mode == 2 ? !wider : false) { x += (w - h * a) / 2; w = h * a; }
     else if (mode != 1) { y += (h - w / a) / 2; h = w / a; }
@@ -2036,6 +2061,35 @@ bool present_frame_fg() {
         float rect[4];
         fit(tvRect, (float)R.tv.img.width / std::max(1u, R.tv.img.height), rect, {w, h}, g_tv_aspect.load(std::memory_order_relaxed));
         job.images = rp::record(cmd, g_comp.img, g_comp.view, rect, generate && R.tv.img.image);
+        // test aid: WWHD_FRAMEGEN_DUMP=first,count writes the window pictures (real, then generated) of
+        // `count` frames from frame `first` as fg_<frame>_<0 real|1 generated>.png
+        static const uint64_t dumpFirst = getenv("WWHD_FRAMEGEN_DUMP") ? strtoull(getenv("WWHD_FRAMEGEN_DUMP"), nullptr, 10) : 0;
+        static const uint64_t dumpCount = [] {
+            const char* e = getenv("WWHD_FRAMEGEN_DUMP");
+            const char* c = e ? strchr(e, ',') : nullptr;
+            return c ? strtoull(c + 1, nullptr, 10) : 4ull;
+        }();
+        if (dumpFirst && R.frame >= dumpFirst && R.frame < dumpFirst + dumpCount)
+            for (size_t k = 0; k < job.images.size(); k++) {
+                Image& img = *const_cast<Image*>(job.images[k]);
+                img.layout = VK_IMAGE_LAYOUT_GENERAL;
+                img.use = Use::COLOR;
+                char name[64];
+                snprintf(name, sizeof name, "fg_%llu_%zu.png", (unsigned long long)R.frame, k);
+                dump_texture(img, name, true, false);
+                VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+                b.oldLayout = img.layout;
+                b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+                b.srcAccessMask = 0;
+                b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                b.image = img.image;
+                b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                vkCmdPipelineBarrier(command_buffer(), VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
+                                     nullptr, 1, &b);
+                img.layout = VK_IMAGE_LAYOUT_GENERAL;
+                img.use = Use::NONE;
+            }
     } else {
         job.images = fg::record(cmd, generate);
     }
@@ -2143,26 +2197,50 @@ void run_main_loop() {}  // Android: the activity owns the main thread
 void with_autorelease_pool(void (*fn)()) { fn(); }
 
 // ---------------------------------------------------------------- clears
+// Clears are deferred (Image::pendingClearLayers): the render pass that next draws into the cleared
+// layer clears it as it begins (vk_draw.cpp, ensure_pass). On tiled mobile GPUs a clear recorded
+// here wrote the whole image to memory and that pass then read it back in full; a clear at the
+// pass's start costs nothing. The game clears its colour and depth targets (scene, shadow maps,
+// post-processing buffers) before drawing into them, many times per frame. WWHD_EAGER_CLEARS=1: as
+// before (each clear recorded at once).
+static bool eager_clears() {
+    static const bool e = getenv("WWHD_EAGER_CLEARS") != nullptr;
+    return e;
+}
+
 static void clear_surface(Surface* s, const float* rgba, bool clearDepth, float depth, bool clearStencil, uint32_t stencil,
                           uint32_t firstSlice = 0, uint32_t numSlices = 1) {
     if (!s || !s->img.image) return;
-    prepare(s->img, Use::COPY_DST);
-    VkCommandBuffer cmd = command_buffer();
-    uint32_t n = std::min(numSlices, s->img.layers - std::min(firstSlice, s->img.layers - 1));
+    Image& img = s->img;
+    firstSlice = std::min(firstSlice, img.layers - 1);
+    uint32_t n = std::min(numSlices, img.layers - firstSlice);
+    VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+    VkClearValue v{};
     if (s->isDepth) {
-        VkImageAspectFlags aspect = (clearDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) |
-                                    (clearStencil && s->fmt.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
-        if (aspect) {
-            VkClearDepthStencilValue v{depth, stencil};
-            VkImageSubresourceRange range{aspect, 0, 1, firstSlice, n};
-            vkCmdClearDepthStencilImage(cmd, s->img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &v, 1, &range);
-        }
+        aspect = (clearDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (clearStencil && s->fmt.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+        if (!aspect) return;
+        v.depthStencil = {depth, stencil};
     } else {
-        VkClearColorValue v{};
-        if (s->fmt.kind == FormatInfo::FLOAT) memcpy(v.float32, rgba, 16);
-        else for (int i = 0; i < 4; i++) v.uint32[i] = (uint32_t)rgba[i];
-        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, firstSlice, n};
-        vkCmdClearColorImage(cmd, s->img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &v, 1, &range);
+        if (s->fmt.kind == FormatInfo::FLOAT) memcpy(v.color.float32, rgba, 16);
+        else for (int i = 0; i < 4; i++) v.color.uint32[i] = (uint32_t)rgba[i];
+    }
+    // the clear replaces what an open pass drew there: that pass must not go on drawing into it
+    end_pass();
+    const uint32_t bits = firstSlice + n >= 32 ? 0 : ((1u << n) - 1) << firstSlice;
+    if (img.pendingClearLayers && (img.pendingClearAspect != aspect || memcmp(&img.pendingClearValue, &v, sizeof v) != 0))
+        flush_pending_clear(img);
+    if (bits && !eager_clears()) {
+        img.pendingClearLayers |= bits;
+        img.pendingClearAspect = aspect;
+        img.pendingClearValue = v;
+    } else {
+        flush_pending_clear(img);
+        prepare(img, Use::COPY_DST);
+        VkImageSubresourceRange range{aspect, 0, 1, firstSlice, n};
+        if (s->isDepth)
+            vkCmdClearDepthStencilImage(command_buffer(), img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &v.depthStencil, 1, &range);
+        else
+            vkCmdClearColorImage(command_buffer(), img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &v.color, 1, &range);
     }
     mark_gpu_written(s);
 }

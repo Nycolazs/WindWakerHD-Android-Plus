@@ -379,6 +379,18 @@ final class OptionsMenu extends Dialog {
         // the game save first: export, import and its automatic backup; then the save states
         submenu(R.string.opt_export, R.string.opt_export_hint, "", a::chooseExport);
         submenu(R.string.opt_import, R.string.opt_import_hint, "", () -> a.pickFolder(MainActivity.PICK_IMPORT));
+        // saves kept outside the app (SaveVault): on once Android's "All files access" is allowed
+        boolean vault = SaveVault.enabled(a);
+        submenu(R.string.opt_vault, 0, a.getString(vault ? R.string.opt_on : R.string.opt_off), () -> {
+            if (SaveVault.enabled(a)) a.info(a.getString(R.string.vault_about_on, SaveVault.FOLDER));
+            else new GameDialog(getContext()).title(R.string.vault_title).message(a.getString(R.string.vault_message, SaveVault.FOLDER))
+                    .button(R.string.vault_later, null)
+                    .button(R.string.vault_allow, () -> {
+                        dismiss();
+                        a.requestVault(false);
+                    }).show();
+        });
+        note(a.getString(vault ? R.string.opt_vault_hint_on : R.string.opt_vault_hint, SaveVault.FOLDER));
         toggle(R.string.opt_auto_backup, R.string.opt_auto_backup_hint, a.prefs.getBoolean("auto_backup", true), on -> {
             a.prefs.edit().putBoolean("auto_backup", on).apply();
             if (on) a.autoBackup();
@@ -387,7 +399,7 @@ final class OptionsMenu extends Dialog {
         final int[] AUTO_SECS = {0, 60, 120, 300, 600};
         int autoCur = 0;
         {
-            int secs = a.prefs.getInt("autosave_secs", 0);
+            int secs = a.prefs.getInt("autosave_secs", MainActivity.DEFAULT_AUTOSAVE_SECS);
             for (int i = 0; i < AUTO_SECS.length; i++) if (AUTO_SECS[i] == secs) { autoCur = i; break; }
         }
         choice(R.string.opt_autosave, R.string.opt_autosave_hint,
@@ -520,6 +532,12 @@ final class OptionsMenu extends Dialog {
             if (fpsModes[i] == fpsMode) fpsIndex = i;
         }
         choice(R.string.opt_fps, R.string.opt_fps_hint, fpsNames, fpsIndex, i -> a.setFpsMode(fpsModes[i]));
+        // one switch for weaker GPUs: the settings below that cost the most GPU time for the least picture
+        choice(R.string.opt_light, R.string.opt_light_hint, a.getResources().getStringArray(R.array.light_modes),
+               a.lightGraphics() ? 1 : 0, i -> {
+                   a.setLightGraphics(i == 1);
+                   fill();
+               });
         choice(R.string.opt_drawdone, R.string.opt_drawdone_hint, a.getResources().getStringArray(R.array.drawdone_modes),
                a.prefs.getInt("drawdone_mode", 0), i -> {
                    a.prefs.edit().putInt("drawdone_mode", i).apply();
@@ -674,13 +692,30 @@ final class OptionsMenu extends Dialog {
     // the game itself: its language (the release's languages; applies after a restart)
     private void game() {
         int[] langs = a.gameLanguages();
-        String[] names = new String[langs.length];
+        // Português (Brasil) is the built-in translation (Mods > Portuguese translation): on top of English
+        final boolean ptbr = a.ptbrInstalled();
+        String[] names = new String[langs.length + (ptbr ? 1 : 0)];
         int curLang = 0;
         for (int i = 0; i < langs.length; i++) {
             names[i] = MainActivity.LANGUAGE_NAMES[langs[i]];
             if (MainActivity.LANGUAGES[langs[i]].equals(a.gameLanguage())) curLang = i;
         }
-        choice(R.string.opt_language, R.string.opt_language_hint, names, curLang, i -> a.setGameLanguage(MainActivity.LANGUAGES[langs[i]]));
+        if (ptbr) {
+            names[langs.length] = a.getString(R.string.language_ptbr);
+            if (a.ptbrEnabled()) curLang = langs.length;
+        }
+        final int startLang = curLang;
+        choice(R.string.opt_language, R.string.opt_language_hint, names, curLang, i -> {
+            boolean toPtbr = ptbr && i == langs.length;
+            if (!toPtbr && !a.ptbrEnabled()) {  // one of the game's own: asked to restart as the menu closes
+                a.setGameLanguage(MainActivity.LANGUAGES[langs[i]]);
+                return;
+            }
+            if (i == startLang) return;
+            dismiss();  // the translation switched on or off: setPtbr asks to restart
+            if (!toPtbr) a.setGameLanguage(MainActivity.LANGUAGES[langs[i]]);
+            a.setPtbr(toPtbr);
+        });
         choice(R.string.opt_app_language, R.string.opt_app_language_hint, a.getResources().getStringArray(R.array.app_languages),
                 a.prefs.getInt("app_language", 0), i -> {
                     a.prefs.edit().putInt("app_language", i).commit();
@@ -803,7 +838,7 @@ final class OptionsMenu extends Dialog {
             a.applyControlsAppearance();
         });
         String[] kinds = {a.getString(R.string.controller_gamepad), a.getString(R.string.controller_pro)};
-        choice(R.string.opt_controller, 0, kinds, Native.getOption("pro_controller") != 0 ? 1 : 0, i -> a.setBool("pro_controller", i == 1));
+        choice(R.string.opt_controller, 0, kinds, a.proControllerSetting() ? 1 : 0, i -> a.setProController(i == 1));
         toggleText(a.getString(R.string.opt_motion), a.getString(R.string.opt_motion_hint) + "\n" + a.motionSourceLabel(),
                 a.prefs.getBoolean("motion", true), a::setMotion);
         if (a.prefs.getBoolean("motion", true))

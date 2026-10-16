@@ -458,9 +458,9 @@
     <string name="cache_loading_detail">%1$,d variantes de shader preparadas</string>
     <string name="cache_building">Preparando todos los shaders antes de que empiece el juego…</string>
     <string name="cache_building_detail">%1$,d de %2$,d pipelines</string>
-    <string name="opt_dynamic_res">Bajar la resolución cuando el teléfono se calienta</string>
-    <string name="opt_dynamic_res_hint">Por encima de 1x: la resolución baja mientras el teléfono está caliente (menos calor y batería, sin pérdida de rendimiento por temperatura) y vuelve cuando se enfría</string>
-    <string name="dynamic_res_now">Ahora: %1$sx por la temperatura</string>
+    <string name="opt_dynamic_res">Resolución dinámica</string>
+    <string name="opt_dynamic_res_hint">Baja la resolución 3D mientras la GPU no da abasto (hasta 0,6x, para que los teléfonos modestos mantengan los fotogramas) o el teléfono está caliente (hasta 1x), y la sube de nuevo cuando hay margen</string>
+    <string name="dynamic_res_now">Ahora: %1$sx (carga de la GPU o temperatura)</string>
     <string name="opt_shaders_at_start">Preparar todos los shaders al iniciar</string>
     <string name="opt_shaders_at_start_hint">Prepara todos los shaders que el juego ya usó en la pantalla de carga: sin tirones al jugar, una carga más larga. Se aplica en el próximo inicio</string>
     <string name="crash_not_now">Ahora no</string>
@@ -491,4 +491,34 @@
         <item>Central + corrección de ruido</item>
         <item>Desactivado</item>
     </string-array>
+    <!-- SaveVault: saves kept outside the app -->
+    <string name="vault_title">Protege tus partidas</string>
+    <string name="vault_message">Permite el \"Acceso a todos los archivos\" y la app guarda una copia de tu partida, tus estados guardados y tus ajustes en la carpeta \"%1$s\" del teléfono. Sigue ahí cuando la app se desinstala o se actualiza, y una nueva instalación lo recupera todo sola.</string>
+    <string name="vault_message_new">Todavía no hay una partida. Si ya jugaste antes, permite el \"Acceso a todos los archivos\" y la app recupera sola tu partida, tus estados guardados y tus ajustes de la carpeta \"%1$s\" (o de las copias automáticas en Descargas), y desde ahora los mantiene ahí, para que ninguna actualización los pierda.</string>
+    <string name="vault_later">Ahora no</string>
+    <string name="vault_allow">Permitir</string>
+    <string name="vault_on_toast">Tus partidas ahora también se guardan en la carpeta \"%1$s\"</string>
+    <string name="vault_restored_title">Tus partidas han vuelto</string>
+    <string name="vault_restoring">Recuperando tus partidas…</string>
+    <string name="vault_part_save">tu partida</string>
+    <string name="vault_part_settings">tus ajustes</string>
+    <string name="vault_restored">Recuperado de \"%2$s\": %1$s.</string>
+    <string name="vault_restart">Los ajustes se aplican después de reiniciar.</string>
+    <string name="opt_vault">Partidas fuera de la app</string>
+    <string name="opt_vault_hint">Desactivado: permite el \"Acceso a todos los archivos\" para mantener una copia en la carpeta \"%1$s\", que sobrevive a actualizaciones y reinstalaciones</string>
+    <string name="opt_vault_hint_on">Tu partida, tus estados guardados y tus ajustes se copian a la carpeta \"%1$s\" cuando cambian; una nueva instalación los recupera sola</string>
+    <string name="vault_about_on">Tu partida, tus estados guardados y tus ajustes se copian a la carpeta \"%1$s\" del teléfono cuando cambian. Tras desinstalar o actualizar la app, la nueva instalación los recupera sola cuando empieza sin partida. No borres esa carpeta.</string>
+    <string name="language_ptbr">Português (Brasil)</string>
+    <plurals name="vault_part_states">
+        <item quantity="one">%d estado guardado</item>
+        <item quantity="other">%d estados guardados</item>
+    </plurals>
+    <!-- light graphics -->
+    <string name="opt_light">Gráficos</string>
+    <string name="opt_light_hint">Ligeros: para GPUs más débiles. Sin oclusión ambiental y sin sombras lejanas</string>
+    <string-array name="light_modes">
+        <item>Calidad</item>
+        <item>Ligeros</item>
+    </string-array>
+    <string name="pro_touch_hint">Para tocar los menús, cambia los controles a %1$s (Opciones)</string>
 </resources>

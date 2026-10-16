@@ -91,6 +91,13 @@ final class PerfStats {
         lastWallMs = now;
     }
 
+    /** the GPU's busy percentage now, or -1 where no counter is readable (ThermalScaler) */
+    float gpuLoad() {
+        gpuPercent = -1;
+        readGpu();
+        return gpuPercent;
+    }
+
     // GPU load files: Adreno's "busy total" counter, else the first number of a percentage file
     // (Mali: utilization of the kernel driver, MediaTek GED, Exynos). The first readable one is used.
     private static final String KGSL = "/sys/class/kgsl/kgsl-3d0/gpubusy";

@@ -121,7 +121,7 @@ final class AutoBackup {
         }
     }
 
-    private static String sha1(File f) throws IOException {
+    static String sha1(File f) throws IOException {
         try (InputStream in = new FileInputStream(f)) {
             java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-1");
             byte[] buf = new byte[1 << 16];

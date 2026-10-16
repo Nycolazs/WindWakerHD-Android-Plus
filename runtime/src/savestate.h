@@ -73,6 +73,8 @@ std::string last_message();             // short status for the title bar ("" wh
 // ---- autosave: snapshot into kAutoSlot every N seconds while a game is being played ----
 void set_autosave_seconds(int secs);    // 0 = off (any thread)
 int autosave_seconds();
+void autosave_now();                    // one now, at the next frame boundary (the app going to the background)
+bool autosave_busy();                   // that one (or the interval's) not written yet
 
 // ---- game thread: call at the frame boundary (top of the per-frame function) ----
 void service(Cpu* c);

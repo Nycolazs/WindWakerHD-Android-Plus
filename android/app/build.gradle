@@ -40,6 +40,14 @@ android {
     // up (an app signed with another key can't update it). Without the file, release builds use the
     // local debug key (fine for personal builds of your own game).
     def keystoreProps = rootProject.file('keystore.properties')
+    // An APK to share (-PwwhdDeviceRecomp, not a test build) must carry the release key: v1.10 went
+    // out with a build machine's debug key, and Android refuses to install an update signed with
+    // another key over it. -PwwhdAllowDebugKey builds one anyway (to sign later: tools/android/sign-release.sh).
+    if (project.hasProperty('wwhdDeviceRecomp') && !project.hasProperty('wwhdTestId') && !keystoreProps.exists()
+            && !project.hasProperty('wwhdAllowDebugKey')
+            && gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') })
+        throw new GradleException("android/keystore.properties is missing: a release APK signed with a debug key can't update the installed app " +
+                "(copy it from ~/.android/wwhd-plus, or pass -PwwhdAllowDebugKey and sign with tools/android/sign-release.sh)")
     signingConfigs {
         if (keystoreProps.exists()) {
             release {

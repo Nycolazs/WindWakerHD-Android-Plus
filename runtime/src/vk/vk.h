@@ -46,7 +46,15 @@ struct Image {
     Use use = Use::NONE;
     bool cube = false;  // created cube compatible
     std::vector<VkImageView> attachViews;  // per layer, for rendering
+    // A clear not recorded yet (vk_device.cpp, clear_surface): the next render pass that renders to
+    // a pending layer clears it as it begins (LOAD_OP_CLEAR) instead of the clear being written to
+    // memory and the pass reading it back. Any other use records it first (prepare).
+    uint32_t pendingClearLayers = 0;          // bit per layer (mip 0)
+    VkImageAspectFlags pendingClearAspect = 0;
+    VkClearValue pendingClearValue{};
 };
+// records the image's deferred clear now (any use other than the render pass that takes it over)
+void flush_pending_clear(Image& img);
 
 // A host image backing a guest surface (render target, depth buffer or sampled texture).
 struct Surface {
@@ -204,6 +212,10 @@ void latch_resolution_scale();  // frame boundary (swap)
 Surface* rescaled(Surface* s);
 // forget everything that refers to `old` and free it once the GPU is done with it
 void retire_image(const Image& old);
+// HUD coverage for 60 fps (generated) (vk_draw.cpp): begins at the first TV layout of a frame; the
+// frame's coverage once every HUD draw wrote it (else null)
+void hud_coverage_begin(Surface* tv);
+Image* hud_coverage(uint64_t frame);
 void retire_images(const std::vector<Image>& olds);  // several at once (one cache flush)
 void evict_unused_textures();  // frame boundary: textures the game hasn't sampled for minutes
 

@@ -6,6 +6,7 @@ extern "C" uint64_t g_draw_state_gen;    // gx2_core.cpp: bumped by any non-data
 // binding and primitive submission. Follows gfx/metal_draw.mm; binding conventions are those of
 // the Vulkan GLSL the decompiler emits (one descriptor set per stage, as in Cemu's Vulkan renderer).
 #include "area_sample.h"
+#include "hud_coverage.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LatteCachedFBO.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
@@ -28,6 +29,7 @@ extern "C" uint64_t g_draw_state_gen;    // gx2_core.cpp: bumped by any non-data
 #include <deque>
 #include <set>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <thread>
 #include <unordered_set>
 #include <dirent.h>
@@ -417,7 +419,9 @@ static FILE* g_spv_out = nullptr;
 static FILE* g_spv_in = nullptr;
 static size_t g_spv_disk_hits;
 
+static void compile_journal_open(const std::string& dir);
 static void spirv_cache_open(const std::string& dir) {
+    compile_journal_open(dir);
     remove((dir + "/spirv.bin").c_str());   // translations before strictMul
     remove((dir + "/spirv2.bin").c_str());  // ... before the finite pixel colours (finiteColorOutputs)
     std::string path = dir + "/spirv3.bin";
@@ -440,8 +444,79 @@ static void spirv_cache_open(const std::string& dir) {
     if (!g_spv_disk.empty()) LOG("[gfx] SPIR-V cache: %zu modules from %s", g_spv_disk.size(), path.c_str());
 }
 
+
+// ---------------------------------------------------------------- compile journal
+// A shader or pipeline whose compile crashes the process (the GPU driver's compiler, glslang) is
+// recorded in the shader cache as it is first used, and every later start compiled it again ahead
+// of the game (the cache replay at the loading screen, the background compiles at the title): the
+// game could not be started any more (reported after entering Beedle's shop ship from the boat).
+// Each compiling thread notes what it compiles in compiling.bin (one 16-byte slot per thread); the
+// crash handler marks the slot of a thread that crashes while compiling; the next start adds those
+// to compile_failed.bin, and what is listed there is never compiled again (its draws are left out).
+struct CjEntry { uint32_t type, crashed; uint64_t id; };
+static int g_cj_fd = -1;
+static std::atomic<int> g_cj_next{0};
+static thread_local int t_cj_slot = -1;
+static thread_local CjEntry t_cj{};
+static std::unordered_set<uint64_t> g_cj_bad;
+enum : uint32_t { kCjModule = 1, kCjPipeline = 2, kCjTranslation = 3 };
+static uint64_t cj_key(uint32_t type, uint64_t id) { return id ^ (uint64_t)type * 0x9E3779B97F4A7C15ull; }
+
+static void compile_journal_open(const std::string& dir) {
+    const std::string cur = dir + "/compiling.bin", failed = dir + "/compile_failed.bin";
+    if (FILE* f = fopen(cur.c_str(), "rb")) {
+        CjEntry e;
+        FILE* out = nullptr;
+        while (fread(&e, sizeof e, 1, f) == 1) {
+            if (!e.crashed || !e.type) continue;
+            if (!out) out = fopen(failed.c_str(), "ab");
+            if (out) fwrite(&e, sizeof e, 1, out);
+            LOG("[gfx] the last run crashed while compiling %s %016llx: it is left out from now on",
+                e.type == kCjModule ? "shader" : e.type == kCjTranslation ? "shader translation" : "pipeline", (unsigned long long)e.id);
+        }
+        if (out) fclose(out);
+        fclose(f);
+    }
+    if (FILE* f = fopen(failed.c_str(), "rb")) {
+        CjEntry e;
+        while (fread(&e, sizeof e, 1, f) == 1) g_cj_bad.insert(cj_key(e.type, e.id));
+        fclose(f);
+    }
+    if (!g_cj_bad.empty()) LOG("[gfx] %zu shaders / pipelines left out (they crashed while compiling)", g_cj_bad.size());
+    g_cj_fd = open(cur.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+}
+static bool compile_journal_bad(uint32_t type, uint64_t id) { return !g_cj_bad.empty() && g_cj_bad.count(cj_key(type, id)); }
+static void compile_journal_begin(uint32_t type, uint64_t id) {
+    if (g_cj_fd < 0) return;
+    if (t_cj_slot < 0) t_cj_slot = g_cj_next.fetch_add(1);
+    if (t_cj_slot >= 256) return;
+    t_cj = {type, 0, id};
+    (void)!pwrite(g_cj_fd, &t_cj, sizeof t_cj, (off_t)t_cj_slot * sizeof t_cj);
+}
+static void compile_journal_end() {
+    if (g_cj_fd < 0 || t_cj_slot < 0 || t_cj_slot >= 256 || !t_cj.type) return;
+    t_cj = {};
+    (void)!pwrite(g_cj_fd, &t_cj, sizeof t_cj, (off_t)t_cj_slot * sizeof t_cj);
+}
+}  // namespace gfx
+// the crash handler (main.cpp): this thread was compiling -> its slot marked (async-signal-safe)
+extern "C" void wwhd_compile_journal_on_crash() {
+    using namespace gfx;
+    if (g_cj_fd < 0 || t_cj_slot < 0 || t_cj_slot >= 256 || !t_cj.type) return;
+    CjEntry e = t_cj;
+    e.crashed = 1;
+    (void)!pwrite(g_cj_fd, &e, sizeof e, (off_t)t_cj_slot * sizeof e);
+}
+namespace gfx {
+
 static void compile_now(Module* m, uint64_t hash, uint64_t key, bool vertex, const std::string& src) {
     double t0 = now_ms();
+    if (compile_journal_bad(kCjModule, hash)) {
+        m->state.store(CS_FAILED, std::memory_order_release);
+        compile_done();
+        return;
+    }
+    m->hash = hash;  // (its SPIR-V on disk: the HUD coverage variant, hud_coverage.h)
     std::vector<uint32_t> spirv;
     {
         std::lock_guard<std::mutex> lk(g_spv_mutex);
@@ -456,7 +531,10 @@ static void compile_now(Module* m, uint64_t hash, uint64_t key, bool vertex, con
     }
     if (spirv.empty()) {
         std::string log;
-        if (!compile_glsl(src.c_str(), vertex, spirv, log)) {
+        compile_journal_begin(kCjModule, hash);
+        const bool compiled = compile_glsl(src.c_str(), vertex, spirv, log);
+        compile_journal_end();
+        if (!compiled) {
             report_compile_error(src, key, log);
             m->state.store(CS_FAILED, std::memory_order_release);
             compile_done();
@@ -475,7 +553,10 @@ static void compile_now(Module* m, uint64_t hash, uint64_t key, bool vertex, con
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = spirv.size() * 4;
     ci.pCode = spirv.data();
-    if (vkCreateShaderModule(R.device, &ci, nullptr, &m->module) != VK_SUCCESS) {
+    compile_journal_begin(kCjModule, hash);
+    const VkResult made = vkCreateShaderModule(R.device, &ci, nullptr, &m->module);
+    compile_journal_end();
+    if (made != VK_SUCCESS) {
         LOG("[gfx] shader %016llx: vkCreateShaderModule failed", (unsigned long long)key);
         m->state.store(CS_FAILED, std::memory_order_release);
         compile_done();
@@ -1096,10 +1177,16 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
     }
     if (!vertex) opt.areaSampledTextures = s->areaUnits = area;
     LatteDecompilerOutput_t out{};
+    if (compile_journal_bad(kCjTranslation, key)) {  // it crashed the translator before: left out
+        s->state = CS_FAILED;
+        return s;
+    }
+    compile_journal_begin(kCjTranslation, key);
     if (vertex)
         LatteDecompiler_DecompileVertexShader(base, (uint32*)regs, mem::ptr(addr), size, fs, opt, &out);
     else
         LatteDecompiler_DecompilePixelShader(base, (uint32*)regs, mem::ptr(addr), size, opt, &out);
+    compile_journal_end();
     if (!out.shader || out.shader->hasError || !out.shader->strBuf_shaderSource) {
         LOG("[gfx] %s shader %08X failed to translate", vertex ? "vertex" : "pixel", addr);
         s->state = CS_FAILED;
@@ -1195,9 +1282,12 @@ struct PassFormats {  // only uint32 members: hashed as raw bytes
     uint32_t stencil = 0;
 };
 
-static VkRenderPass get_render_pass(const PassFormats& pf) {
+// `clears`: attachments the pass clears as it begins (bit i colour i, bit 8 depth, bit 9 stencil;
+// Image::pendingClearLayers) instead of loading them. Load operations don't take part in render pass
+// compatibility: pipelines and framebuffers are made with the variant without clears.
+static VkRenderPass get_render_pass(const PassFormats& pf, uint32_t clears = 0) {
     static std::unordered_map<uint64_t, VkRenderPass> cache;
-    uint64_t h = hash_bytes(&pf, sizeof pf);
+    uint64_t h = hash_bytes(&pf, sizeof pf, clears);
     auto it = cache.find(h);
     if (it != cache.end()) return it->second;
     std::vector<VkAttachmentDescription> atts;
@@ -1210,7 +1300,7 @@ static VkRenderPass get_render_pass(const PassFormats& pf) {
         VkAttachmentDescription a{};
         a.format = (VkFormat)pf.color[i];
         a.samples = VK_SAMPLE_COUNT_1_BIT;
-        a.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        a.loadOp = clears >> i & 1 ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
         a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         a.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         a.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -1223,9 +1313,9 @@ static VkRenderPass get_render_pass(const PassFormats& pf) {
         VkAttachmentDescription a{};
         a.format = (VkFormat)pf.depth;
         a.samples = VK_SAMPLE_COUNT_1_BIT;
-        a.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        a.loadOp = clears >> 8 & 1 ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
         a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        a.stencilLoadOp = pf.stencil ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        a.stencilLoadOp = !pf.stencil ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : clears >> 9 & 1 ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
         a.stencilStoreOp = pf.stencil ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE;
         a.initialLayout = a.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         depthRef = {(uint32_t)atts.size(), VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
@@ -1297,8 +1387,13 @@ struct PipelineState {
     uint32_t frontCCW = 0;
     uint32_t depthControl = 0;  // DB_DEPTH_CONTROL (0 without depth buffer)
     uint32_t depthClamp = 0;
-    uint32_t intTargets = 0;    // bit per color attachment with an integer format
+    uint32_t intTargets = 0;    // bit per color attachment with an integer format; bits 28-31: hud_cov_slot
 };
+// the colour attachment of the HUD coverage (hud_coverage.h; 0: none): the pixel shader's variant.
+// Kept in intTargets' unused bits, so PipelineState (and the shader cache's pipeline recipes, which
+// hold it as it is) keeps its size: a larger one made every cached recipe unreadable.
+static uint32_t hud_cov_slot(const PipelineState& st) { return st.intTargets >> 28; }
+static void set_hud_cov_slot(PipelineState& st, uint32_t slot) { st.intTargets = (st.intTargets & 0x0FFFFFFFu) | (slot << 28); }
 
 struct Pipeline {
     VkPipeline pipeline = VK_NULL_HANDLE;   // valid once status == CS_READY
@@ -1418,7 +1513,112 @@ struct PipelineDesc {
 
 static VkPrimitiveTopology topology_of(uint32_t t) { return (VkPrimitiveTopology)t; }
 
+// ---------------------------------------------------------------- HUD coverage (60 fps generated)
+// From the first layout drawn on the TV picture (rp::layout_root, where the scene is copied aside)
+// each draw into that picture also writes how much it covers what lies behind: colour 1, an R8
+// image of the picture's size cleared to 0, blended with the factor the draw's own blend gives the
+// picture behind it (1 - that factor, in effect). The in-between frame then moves the scene behind
+// translucent HUD parts too (vk/reproj.cpp), where a mask of "HUD here" left the scene behind them
+// unmoved: a frame of still background around every button and item icon, flickering at 30 Hz
+// while the camera turned. A frame with a HUD draw that couldn't write it (a shader without the
+// variant, another target alongside) is generated the old way. WWHD_HUD_COVERAGE=0: off.
+static bool hud_coverage_on() {
+    static const bool on = (!getenv("WWHD_HUD_COVERAGE") || atoi(getenv("WWHD_HUD_COVERAGE")) != 0);
+    return on && R.features.independentBlend;
+}
+static Surface g_cov;
+static Surface* g_cov_target = nullptr;
+static uint64_t g_cov_frame = ~0ull;
+static bool g_cov_valid = false;
+static uint32_t g_cov_draws = 0;
+struct CovModule { VkShaderModule module; uint32_t location; };
+static std::unordered_map<Module*, CovModule> g_cov_modules;  // module VK_NULL_HANDLE: no variant
+
+void hud_coverage_begin(Surface* tv) {
+    g_cov_frame = ~0ull;
+    if (!tv || !hud_coverage_on() || !tv->img.image) return;
+    if (!g_cov.img.image || g_cov.img.width != tv->img.width || g_cov.img.height != tv->img.height) {
+        if (g_cov.img.image) retire_image(g_cov.img);
+        g_cov.img = Image{};
+        if (!create_image(g_cov.img, VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R8_UNORM, tv->img.width, tv->img.height, 1, 1, 1,
+                          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false, false,
+                          false))
+            return;
+        g_cov.fmt = FormatInfo{};
+        g_cov.fmt.format = VK_FORMAT_R8_UNORM;
+        g_cov.fmt.renderable = true;
+        g_cov.fmt.kind = FormatInfo::FLOAT;
+        g_cov.slices = 1;
+        g_cov.mips = 1;
+        g_cov.addr = 0;  // private: never found by address lookups
+    }
+    // guest size and scales as the picture's, so draws scale their viewports alike
+    g_cov.width = tv->width;
+    g_cov.height = tv->height;
+    g_cov.rscale = tv->rscale;
+    g_cov.ax = tv->ax;
+    g_cov.ay = tv->ay;
+    // cleared as the first HUD pass begins (or before the in-between frame reads it)
+    g_cov.img.pendingClearLayers = 1;
+    g_cov.img.pendingClearAspect = VK_IMAGE_ASPECT_COLOR_BIT;
+    g_cov.img.pendingClearValue = VkClearValue{};
+    g_cov_target = tv;
+    g_cov_frame = R.frame;
+    g_cov_valid = true;
+    g_cov_draws = 0;
+}
+
+// the coverage of `frame`'s HUD, if every HUD draw wrote it (rp::record)
+Image* hud_coverage(uint64_t frame) { return g_cov_frame == frame && g_cov_valid && g_cov.img.image ? &g_cov.img : nullptr; }
+
+static CovModule coverage_module(Module* m) {
+    if (!m || m->state.load(std::memory_order_acquire) != CS_READY || !m->hash) return {VK_NULL_HANDLE, 0};
+    auto it = g_cov_modules.find(m);
+    if (it != g_cov_modules.end()) return it->second;
+    std::vector<uint32_t> spirv;
+    {
+        std::lock_guard<std::mutex> lk(g_spv_mutex);
+        auto d = g_spv_disk.find(m->hash);
+        if (d != g_spv_disk.end() && g_spv_in) {
+            spirv.resize(d->second.words);
+            if (fseek(g_spv_in, d->second.offset, SEEK_SET) != 0 || fread(spirv.data(), 4, spirv.size(), g_spv_in) != spirv.size()) spirv.clear();
+        }
+    }
+    VkShaderModule vm = VK_NULL_HANDLE;
+    uint32_t location = 0;
+    if (!spirv.empty() && hud_coverage::add_output(spirv, location)) {
+        VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        ci.codeSize = spirv.size() * 4;
+        ci.pCode = spirv.data();
+        if (vkCreateShaderModule(R.device, &ci, nullptr, &vm) != VK_SUCCESS) vm = VK_NULL_HANDLE;
+    }
+    static int failures = 0;
+    if (!vm && failures++ < 8) LOG("[framegen] HUD shader %016llx: no coverage variant", (unsigned long long)m->key);
+    g_cov_modules[m] = {vm, location};
+    return {vm, location};
+}
+
+// the coverage attachment's blend from the picture's: what the draw leaves of the picture behind
+static VkPipelineColorBlendAttachmentState coverage_blend(const VkPipelineColorBlendAttachmentState& c0) {
+    VkPipelineColorBlendAttachmentState c{};
+    c.colorWriteMask = (c0.colorWriteMask & 7) ? VK_COLOR_COMPONENT_R_BIT : 0;
+    if (!c0.blendEnable) return c;  // replaces what was there: covered
+    c.blendEnable = VK_TRUE;
+    c.colorBlendOp = c.alphaBlendOp = VK_BLEND_OP_ADD;
+    VkBlendFactor src = VK_BLEND_FACTOR_SRC_ALPHA, dst = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;  // "over"
+    if (c0.colorBlendOp == VK_BLEND_OP_ADD || c0.colorBlendOp == VK_BLEND_OP_SUBTRACT) switch (c0.dstColorBlendFactor) {
+        case VK_BLEND_FACTOR_ZERO: src = VK_BLEND_FACTOR_ONE; dst = VK_BLEND_FACTOR_ZERO; break;          // replaces
+        case VK_BLEND_FACTOR_ONE: src = VK_BLEND_FACTOR_ZERO; dst = VK_BLEND_FACTOR_ONE; break;           // adds: covers nothing
+        case VK_BLEND_FACTOR_SRC_ALPHA: src = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA; dst = VK_BLEND_FACTOR_SRC_ALPHA; break;
+        default: break;
+    }
+    c.srcColorBlendFactor = c.srcAlphaBlendFactor = src;
+    c.dstColorBlendFactor = c.dstAlphaBlendFactor = dst;
+    return c;
+}
+
 static Pipeline* get_pipeline(const uint32_t* regs, Shader* vs, Shader* ps, LatteFetchShader* fs, uint64_t fsKey, const PipelineState& st) {
+    if (hud_cov_slot(st) && !coverage_module(ps->mod).module) return nullptr;  // (never a pipeline without its module)
     // shaders with identical translations share pipelines
     Module* mods[2] = {vs->mod, ps->mod};
     uint64_t h = hash_bytes(mods, sizeof mods);
@@ -1442,7 +1642,8 @@ static Pipeline* get_pipeline(const uint32_t* regs, Shader* vs, Shader* ps, Latt
 
     auto d = std::make_shared<PipelineDesc>();
     d->stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vs->mod->module, "main", nullptr};
-    d->stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, ps->mod->module, "main", nullptr};
+    d->stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT,
+                    hud_cov_slot(st) ? coverage_module(ps->mod).module : ps->mod->module, "main", nullptr};
     // vertex input: attributes fetched as uint and decoded (byte-swapped) in the shader
     for (auto& g : fs->bufferGroups) {
         bool instanced = false, any = false;
@@ -1534,6 +1735,7 @@ static Pipeline* get_pipeline(const uint32_t* regs, Shader* vs, Shader* ps, Latt
     // without independent blending every attachment must use the same state
     if (!R.features.independentBlend && firstUsed >= 0)
         for (uint32_t i = 0; i < colorCount; i++) d->blend[i] = d->blend[firstUsed];
+    if (hud_cov_slot(st) && hud_cov_slot(st) < 8) d->blend[hud_cov_slot(st)] = coverage_blend(d->blend[0]);
     d->cb.attachmentCount = colorCount;
     d->cb.pAttachments = d->blend;
     d->dyn[0] = VK_DYNAMIC_STATE_VIEWPORT;
@@ -1558,9 +1760,19 @@ static Pipeline* get_pipeline(const uint32_t* regs, Shader* vs, Shader* ps, Latt
     d->pi.layout = pl->layout;
     d->pi.renderPass = get_render_pass(st.pass);
 
-    auto build = [pl, d, vsKey = vs->key, psKey = ps->key] {
+    // stable across runs (the module pointers in `h` are not): the compile journal's id
+    const uint64_t stableId = hash_bytes(&st, sizeof st, vs->key * 0x100000001B3ull ^ ps->key ^ fsKey * 31);
+    if (compile_journal_bad(kCjPipeline, stableId)) {
+        static int logged = 0;
+        if (logged++ < 8) LOG("[gfx] pipeline %016llx left out (it crashed while compiling)", (unsigned long long)stableId);
+        pl->status.store(CS_FAILED, std::memory_order_release);
+        return nullptr;
+    }
+    auto build = [pl, d, vsKey = vs->key, psKey = ps->key, stableId] {
         auto t0 = std::chrono::steady_clock::now();
+        compile_journal_begin(kCjPipeline, stableId);
         VkResult r = create_graphics_pipeline(&d->pi, &pl->pipeline);
+        compile_journal_end();
         g_t_pipeline_us += (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
         if (r != VK_SUCCESS) LOG("[gfx] pipeline creation failed: VkResult %d", (int)r);
         else {
@@ -1760,6 +1972,18 @@ static VkImageView texture_view(Surface* s, VkImageViewType type, uint32_t word4
     return v;
 }
 
+// guest units -> image pixels of a render target: the image's own size over the guest's. The image
+// size is rounded (vk_surfaces.cpp, create_surface_image), so rscale * ax alone falls short of the
+// edge by a fraction of a pixel: the last column (or row) of widened and half-size targets was
+// never drawn and kept the clear colour or an old picture, which the bloom, blur and occlusion
+// passes then spread into a dark or bluish band along the right and bottom edges of the screen.
+static inline float image_scale_x(const Surface* s) {
+    return s->rscale * s->ax == 1.0f || !s->width ? 1.0f : (float)s->img.width / (float)s->width;
+}
+static inline float image_scale_y(const Surface* s) {
+    return s->rscale * s->ay == 1.0f || !s->height ? 1.0f : (float)s->img.height / (float)s->height;
+}
+
 // ---------------------------------------------------------------- per-stage resources
 // enhancement, toggled in game (settings menu; WWHD_AO_HIRES=0 starts with it off): the game
 // downsamples depth to 640x360 (PS 3BB9DE00) and computes ambient occlusion from it at 960x540
@@ -1832,8 +2056,101 @@ struct StageTextures {
     float unitScale[LATTE_NUM_MAX_TEX_UNITS];  // by texture unit: resolution scale of the bound surface (x)
     float unitScaleY[LATTE_NUM_MAX_TEX_UNITS]; // ... (y; differs from x for aspect-widened targets)
     Image* sampled[LATTE_NUM_MAX_TEX_UNITS];   // by binding: the image to prepare for sampling (prepare_sampled)
+    Surface* surf[LATTE_NUM_MAX_TEX_UNITS];    // ... and its surface
     int count = 0;
 };
+
+// ---------------------------------------------------------------- textures ready before the pass
+// A texture that a draw samples has to be in its shader-read layout, and a layout change can't be
+// recorded inside a render pass: a texture first read in the middle of a pass (a buffer drawn by
+// an earlier pass of the frame, or just used as a copy source) ended that pass, which on a tiled
+// GPU stores every attachment to memory and loads them back for the rest of it (the scene pass,
+// 1598x720 colour + R8 + D32S8 at 1x: ~15 MB each way, 4 times a frame in Outset). The game's frame
+// has the same shape from one frame to the next, so each pass (by its attachments) remembers the
+// textures that ended it, and the next time it begins they are made ready first. Nothing else can
+// write them while the pass is open (they aren't its attachments; copies end passes), so the early
+// layout change is always right; a guess that doesn't come true costs one barrier.
+// WWHD_PASS_PREFETCH=0: off.
+static bool pass_prefetch_on() {
+    static const bool on = !getenv("WWHD_PASS_PREFETCH") || atoi(getenv("WWHD_PASS_PREFETCH")) != 0;
+    return on;
+}
+struct PassRead {
+    uint32_t addr, width, height, format;
+    uint64_t lastFrame;
+};
+static std::unordered_map<uint64_t, std::vector<PassRead>> g_pass_reads;
+static uint64_t g_pass_prefetched = 0, g_pass_splits_seen = 0;
+
+static uint64_t pass_signature(Surface* const* colors, Surface* depth, uint32_t w, uint32_t h) {
+    uint32_t key[11] = {};
+    for (int i = 0; i < 8; i++) key[i] = colors[i] ? colors[i]->addr ^ colors[i]->format << 1 : 0;
+    key[8] = depth ? depth->addr : 0;
+    key[9] = w;
+    key[10] = h;
+    return hash_bytes(key, sizeof key);
+}
+
+// the surface a texture was found as (not a private copy: feedback, mip chain, AO depth)
+static bool primary_surface(const Surface* s) {
+    if (!s || !s->addr) return false;
+    auto range = R.surfaces.equal_range(s->addr);
+    for (auto it = range.first; it != range.second; ++it)
+        if (it->second.get() == s) return true;
+    return false;
+}
+
+// a draw in the open pass is about to sample these: the ones not yet readable will end the pass
+static void note_pass_reads(const StageTextures& t) {
+    if (!R.pass || !pass_prefetch_on()) return;
+    for (int i = 0; i < t.count; i++) {
+        Image* im = t.sampled[i];
+        Surface* s = t.surf[i];
+        if (!im || !s || im != &s->img || im->use == Use::SAMPLED) continue;
+        bool attached = s == R.passDepth;
+        for (int c = 0; c < 8 && !attached; c++) attached = R.passColor[c] == s;
+        if (attached || !primary_surface(s)) continue;
+        auto& v = g_pass_reads[pass_signature(R.passColor, R.passDepth, R.passWidth, R.passHeight)];
+        bool found = false;
+        for (auto& r : v)
+            if (r.addr == s->addr && r.width == s->width && r.height == s->height && r.format == s->format) {
+                r.lastFrame = R.frame;
+                found = true;
+            }
+        if (!found && v.size() < 16) v.push_back({s->addr, s->width, s->height, s->format, R.frame});
+        g_pass_splits_seen++;
+        DLOG("[pass] texture %08X %ux%u first read in the pass (use %d): ready before it next time", s->addr, s->width, s->height,
+             (int)im->use);
+    }
+}
+
+// the pass about to begin: the textures it read last time, in their shader-read layout now
+static void prefetch_pass_reads(Surface* const* colors, Surface* depth, uint32_t w, uint32_t h) {
+    if (!pass_prefetch_on() || g_pass_reads.empty()) return;
+    auto it = g_pass_reads.find(pass_signature(colors, depth, w, h));
+    if (it == g_pass_reads.end()) return;
+    auto& v = it->second;
+    for (size_t k = 0; k < v.size();) {
+        PassRead& r = v[k];
+        if (R.frame - r.lastFrame > 120) {  // not read there for 4 s: forgotten
+            v[k] = v.back();
+            v.pop_back();
+            continue;
+        }
+        k++;
+        auto range = R.surfaces.equal_range(r.addr);
+        for (auto si = range.first; si != range.second; ++si) {
+            Surface* s = si->second.get();
+            if (s->width != r.width || s->height != r.height || s->format != r.format || !s->img.image) continue;
+            if (s->img.use == Use::SAMPLED || s == depth) continue;
+            bool attached = false;
+            for (int c = 0; c < 8 && !attached; c++) attached = colors[c] == s;
+            if (attached) continue;
+            prepare(s->img, Use::SAMPLED);
+            g_pass_prefetched++;
+        }
+    }
+}
 
 // Every sampled image goes to its shader-read layout once all textures of the draw are resolved:
 // resolving one texture can copy from another one already resolved (a surface at the same address
@@ -1868,6 +2185,7 @@ static void resolve_textures(const uint32_t* regs, Shader* sh, bool vertex, Surf
         out.view[i] = VK_NULL_HANDLE;
         out.sampler[i] = VK_NULL_HANDLE;
         out.sampled[i] = nullptr;
+        out.surf[i] = nullptr;
         sint32 unit = rm.getRelativeTextureUnitFromRelativeBindingPoint(i);
         if (unit < 0) continue;
         VkImageViewType type = shader_view_type(dec->textureUnitDim[unit]);
@@ -1891,8 +2209,9 @@ static void resolve_textures(const uint32_t* regs, Shader* sh, bool vertex, Surf
              regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + (std::min<uint32_t>(samplerIdx, 17) + samplerBase) * 3 + 2]);
         if (v) {
             out.sampled[i] = &s->img;  // prepared once the draw's textures are all resolved (prepare_sampled)
-            out.unitScale[unit] = s->rscale * s->ax;
-            out.unitScaleY[unit] = s->rscale * s->ay;
+            out.surf[i] = s;
+            out.unitScale[unit] = image_scale_x(s);
+            out.unitScaleY[unit] = image_scale_y(s);
         }
         else v = null_texture(type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY && !R.features.imageCubeArray ? VK_IMAGE_VIEW_TYPE_CUBE : type);
         out.view[i] = v;
@@ -2218,6 +2537,27 @@ static bool ensure_pass(Surface* const* colors, const uint32_t* colorSlices, Sur
         if (same) return true;
     }
     end_pass();
+    prefetch_pass_reads(colors, depth, w, h);
+    // deferred clears of the layers this pass renders to: done by the pass as it begins (the whole
+    // render area is the whole layer; a larger depth buffer is cleared the usual way)
+    uint32_t clears = 0;
+    VkClearValue clearValues[9] = {};
+    {
+        uint32_t k = 0;
+        auto take = [&](Image& img, uint32_t layer, uint32_t bit, bool depthAtt) {
+            if (layer >= 32 || !(img.pendingClearLayers >> layer & 1) || img.width != w || img.height != h) return;
+            img.pendingClearLayers &= ~(1u << layer);
+            clearValues[k] = img.pendingClearValue;
+            if (!depthAtt) clears |= 1u << bit;
+            else {
+                if (img.pendingClearAspect & VK_IMAGE_ASPECT_DEPTH_BIT) clears |= 1u << 8;
+                if (img.pendingClearAspect & VK_IMAGE_ASPECT_STENCIL_BIT) clears |= 1u << 9;
+            }
+        };
+        for (int i = 0; i < 8; i++)
+            if (colors[i]) take(colors[i]->img, colorSlices[i], i, false), k++;
+        if (depth) take(depth->img, depthSlice, 8, true);
+    }
     for (int i = 0; i < 8; i++)
         if (colors[i]) prepare(colors[i]->img, Use::COLOR);
     if (depth) prepare(depth->img, Use::DEPTH);
@@ -2237,11 +2577,15 @@ static bool ensure_pass(Surface* const* colors, const uint32_t* colorSlices, Sur
         mark_gpu_written(depth);
     }
     if (!n) return false;
-    VkRenderPass rp = get_render_pass(pf);
+    VkRenderPass compatible = get_render_pass(pf), rp = clears ? get_render_pass(pf, clears) : compatible;
     VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     bi.renderPass = rp;
-    bi.framebuffer = get_framebuffer(rp, views, n, w, h);
+    bi.framebuffer = get_framebuffer(compatible, views, n, w, h);
     bi.renderArea = {{0, 0}, {w, h}};
+    if (clears) {
+        bi.clearValueCount = n;
+        bi.pClearValues = clearValues;
+    }
     VkCommandBuffer cb = command_buffer();
     {
         VkFormat cf[8];
@@ -2250,6 +2594,8 @@ static bool ensure_pass(Surface* const* colors, const uint32_t* colorSlices, Sur
             if (pf.color[i]) cf[nc++] = (VkFormat)pf.color[i];
         prof_pass_begin(w, h, cf, nc, (VkFormat)pf.depth);
     }
+    DLOG("[pass] begin %ux%u: %u attachments, clears %03X, colour %08X depth %08X", w, h, n, clears, colors[0] ? colors[0]->addr : 0,
+         depth ? depth->addr : 0);
     vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
     // Dynamic state and bindings recorded from here on are tracked again. Not valid until the first
     // draw has set all of it: Vulkan keeps the previous pass's values within a command buffer (and
@@ -2449,6 +2795,7 @@ static void cache_record_shader(const uint32_t* regs, bool vertex) {
 
 static void cache_record_pipeline(const uint32_t* regs, Shader* vs, Shader* ps, uint64_t fsKey, const PipelineState& st) {
     if (g_cache_replaying || !g_cache_out) return;
+    if (hud_cov_slot(st)) return;  // made from the module at draw time (coverage_module), never replayed
     PipelineRecipe r{};
     r.vsKey = vs->key;
     r.psKey = ps->key;
@@ -2787,12 +3134,19 @@ void hitch_report(double frameMs, double warmMs) {
             "%zu new pipelines, cache warm-up %.1f ms", (unsigned long long)R.frame, frameMs, dec, shaders, waited, pipes, warmMs);
 }
 
+namespace rec { void report_op_counts(); }  // vk_record.cpp
 void report_skips() {
+    rec::report_op_counts();
     char buf[512];
     int n = 0;
     for (int i = 0; i < SK_COUNT; i++)
         if (g_skip[i]) n += snprintf(buf + n, sizeof buf - n, " %s=%llu", kSkipNames[i], (unsigned long long)g_skip[i]);
     if (n) LOG("[gfx] skipped draws:%s", buf);
+    if (g_pass_prefetched || g_pass_splits_seen) {
+        LOG("[gfx] textures made ready before their pass: %llu; pass splits by a first read: %llu", (unsigned long long)g_pass_prefetched,
+            (unsigned long long)g_pass_splits_seen);
+        g_pass_prefetched = g_pass_splits_seen = 0;
+    }
     if (g_waited_n[0] + g_waited_n[1] + g_waited_n[2])
         LOG("[gfx] waited for compiles (policy %d): recent targets %llu draws %.0f ms, intermittent %llu draws %.0f ms, "
             "new targets %llu draws %.0f ms", g_wait_policy, (unsigned long long)g_waited_n[0], g_waited_ms[0],
@@ -3138,6 +3492,7 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
             for (Shader* sh : {ps, vs}) {
                 char name[64];
                 snprintf(name, sizeof name, "/live_%s_%08X.glsl", sh == ps ? "ps" : "vs", psAddr);
+                if (!sh->dec || !sh->dec->strBuf_shaderSource) continue;  // freed once compiled (free_source)
                 if (FILE* f = fopen((dir + name).c_str(), "w")) {
                     fputs(sh->dec->strBuf_shaderSource->c_str(), f);
                     fclose(f);
@@ -3201,12 +3556,29 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     uint32_t w = 0, h = 0;
     float targetScale = 1.0f, targetScaleY = 1.0f;
     for (auto* c : colors)
-        if (c) { w = c->img.width; h = c->img.height; targetScale = c->rscale * c->ax; targetScaleY = c->rscale * c->ay; break; }
+        if (c) { w = c->img.width; h = c->img.height; targetScale = image_scale_x(c); targetScaleY = image_scale_y(c); break; }
     if (depth && w && (depth->img.width < w || depth->img.height < h)) { depth = nullptr; g_skip[SK_DROPPED_DEPTH]++; }
-    if (!w && depth) { w = depth->img.width; h = depth->img.height; targetScale = depth->rscale * depth->ax; targetScaleY = depth->rscale * depth->ay; }
+    if (!w && depth) { w = depth->img.width; h = depth->img.height; targetScale = image_scale_x(depth); targetScaleY = image_scale_y(depth); }
     for (auto& c : colors)
         if (c && (c->img.width != w || c->img.height != h)) { c = nullptr; g_skip[SK_DROPPED_COLOR]++; }
     if (!w) { g_skip[SK_NO_TARGET]++; return; }
+    // a HUD draw into the TV picture: its coverage too (hud_coverage_begin)
+    bool hudCov = false;
+    uint32_t covSlot = 0;
+    if (g_cov_frame == R.frame && g_cov_valid && colors[0] == g_cov_target && !g_hires_redraw) {
+        bool alone = true;
+        for (int i = 1; i < 8; i++) alone = alone && !colors[i];
+        CovModule cm = alone && ps->mod ? coverage_module(ps->mod) : CovModule{VK_NULL_HANDLE, 0};
+        if (cm.module && g_cov.img.width == w && g_cov.img.height == h && colors[0]->fmt.kind == FormatInfo::FLOAT) {
+            colors[cm.location] = &g_cov;
+            colorSlices[cm.location] = 0;
+            covSlot = cm.location;
+            hudCov = true;
+            g_cov_draws++;
+        } else {
+            g_cov_valid = false;  // this frame's in-between one: the old way
+        }
+    }
 
     // skipping while compiling only for targets drawn in each of the last 3 frames (see wait_compiled)
     bool everyFrame = true;
@@ -3249,14 +3621,18 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     // guest units -> image pixels: the resolution scale, times 1.5 for the private AO depth copy
     const float k = (g_hires_redraw ? 1.5f : 1.0f) * targetScale, ky = (g_hires_redraw ? 1.5f : 1.0f) * targetScaleY;
     uint32_t tl = regs[REGADDR::PA_SC_GENERIC_SCISSOR_TL], br = regs[REGADDR::PA_SC_GENERIC_SCISSOR_BR];
-    uint32_t sx = std::min<uint32_t>((uint32_t)((tl & 0x7FFF) * k), w), sy = std::min<uint32_t>((uint32_t)(((tl >> 16) & 0x7FFF) * ky), h);
-    uint32_t ex = std::min<uint32_t>((uint32_t)((br & 0x7FFF) * k), w), ey = std::min<uint32_t>((uint32_t)(((br >> 16) & 0x7FFF) * ky), h);
+    // rounded, not truncated: a scissor ending at the guest target's edge ends at the image's edge
+    // (truncated, 1280 x 1.24875 left the last column of every widened target undrawn)
+    uint32_t sx = std::min<uint32_t>((uint32_t)lroundf((tl & 0x7FFF) * k), w), sy = std::min<uint32_t>((uint32_t)lroundf(((tl >> 16) & 0x7FFF) * ky), h);
+    uint32_t ex = std::min<uint32_t>((uint32_t)lroundf((br & 0x7FFF) * k), w), ey = std::min<uint32_t>((uint32_t)lroundf(((br >> 16) & 0x7FFF) * ky), h);
     if (ex <= sx || ey <= sy) { g_skip[SK_SCISSOR]++; return; }
 
     // textures: uploads, layout changes and copies happen before the render pass begins
     StageTextures vtex, ptex;
     resolve_textures(regs, vs, true, colors, depth, vtex);
     resolve_textures(regs, ps, false, colors, depth, ptex);
+    note_pass_reads(vtex);
+    note_pass_reads(ptex);
     prepare_sampled(vtex);
     prepare_sampled(ptex);
 
@@ -3301,6 +3677,7 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
         st.pass.stencil = depth->fmt.stencil;
     }
     for (int i = 0; i < 8; i++) st.blend[i] = regs[REGADDR::CB_BLEND0_CONTROL + i];
+    set_hud_cov_slot(st, hudCov ? covSlot : 0);
     st.colorControl = regs[REGADDR::CB_COLOR_CONTROL];
     st.targetMask = regs[REGADDR::CB_TARGET_MASK];
     for (int i = 0; i < 8; i++)
@@ -3315,6 +3692,14 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     st.depthClamp = clipCntl.get_ZCLIP_FAR_DISABLE() ? 1 : 0;
 
     Pipeline* pipe = get_pipeline(regs, vs, ps, fs, fsKey, st);
+    if (!pipe && hudCov) {  // its coverage variant is still compiling: drawn as usual, the frame generated the old way
+        hudCov = false;
+        g_cov_valid = false;
+        colors[covSlot] = nullptr;
+        set_hud_cov_slot(st, 0);
+        st.pass.color[covSlot] = 0;
+        pipe = get_pipeline(regs, vs, ps, fs, fsKey, st);
+    }
     g_wait_whole = false;
     if (!pipe) { g_skip[SK_PIPE_COMPILING]++; return; }
 

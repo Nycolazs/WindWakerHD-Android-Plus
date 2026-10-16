@@ -40,6 +40,7 @@ bool driver_fallback();
 
 // rendering resolution scale (the app's setting); applied from the next frame on (any thread)
 void set_resolution_scale(float scale);
+float resolution_scale();  // the one in use
 
 // frame generation settings (the app's menu); applied from the next frame on (any thread)
 void request_frame_generation(bool on, const char* dll, bool quality, float flowScale, int multiplier, bool uiDetection);

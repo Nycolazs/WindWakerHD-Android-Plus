@@ -35,6 +35,9 @@ struct LatteDecompilerALUInstruction
 	uint8 aluUnit{}; // 0-3 -> ALU.x/y/u/w (PV), 4 -> Trans unit (PS)
 	uint8 indexInGroup{}; // index of instruction within instruction group
 	bool isLastInstructionOfGroup{};
+	// WWHD (wwhd_analyze_finite): bit n set if source operand n may hold infinity or NaN; all set
+	// until the analysis ran (the console's 0 * anything = 0 multiply is then kept for it)
+	uint8 wwhdMayBeNonFinite{0x7};
 };
 
 struct LatteDecompilerTEXInstruction

@@ -1013,6 +1013,18 @@ void _emitTypeConversionSuffix(LatteDecompilerShaderContext* shaderContext, sint
 	src->add(")");
 }
 
+// WWHD: the reciprocal, square root, log and exponential results kept finite (wwhd_fin, with
+// wwhd_analyze_finite): clamped to +-2^64, so infinity becomes +-2^64 and 0 times it is still 0 as
+// with the console's multiply (2^64 times anything a shader holds stays finite, where the float
+// maximum would overflow to infinity again), and the multiplies after them need no compare and
+// select of their own. A NaN (the square root of a negative number) comes out of the clamp as the
+// GPU's min / max give it (+-2^64 on Adreno and Mali, which ignore a NaN operand).
+static bool wwhd_sanitize_on(LatteDecompilerShaderContext* shaderContext)
+{
+	static const bool on = !getenv("WWHD_MUL_ANALYSIS") || atoi(getenv("WWHD_MUL_ANALYSIS")) != 0;
+	return on && shaderContext->options->strictMul;
+}
+
 template<int TDataType>
 void _emitALUOperationBinary(LatteDecompilerShaderContext* shaderContext, LatteDecompilerALUInstruction* aluInstruction, const char* operandStr)
 {
@@ -1154,6 +1166,8 @@ void _emitALUOP2InstructionCode(LatteDecompilerShaderContext* shaderContext, Lat
 			{
 				useDefaultMul = true;
 			}
+			if ((aluInstruction->wwhdMayBeNonFinite & 3) == 0)
+				useDefaultMul = true;  // both operands finite: the GPU's multiply gives the same (wwhd_analyze_finite)
 			if (shaderContext->options->strictMul && useDefaultMul == false)
 			{
 				src->add("mul_nonIEEE(");
@@ -1183,9 +1197,12 @@ void _emitALUOP2InstructionCode(LatteDecompilerShaderContext* shaderContext, Lat
 		_emitInstructionOutputVariableName(shaderContext, aluInstruction);
 		src->add(" = ");
 		_emitTypeConversionPrefix(shaderContext, LATTE_DECOMPILER_DTYPE_FLOAT, outputType);
-		src->add("1.0");
+		const bool fin = wwhd_sanitize_on(shaderContext);
+		src->add(fin ? "wwhd_fin(1.0" : "1.0");
 		src->add(" / ");
 		_emitOperandInputCode(shaderContext, aluInstruction, 0, LATTE_DECOMPILER_DTYPE_FLOAT);
+		if (fin)
+			src->add(")");
 		_emitTypeConversionSuffix(shaderContext, LATTE_DECOMPILER_DTYPE_FLOAT, outputType);
 		src->add(";" _CRLF);
 	}
@@ -1240,6 +1257,8 @@ void _emitALUOP2InstructionCode(LatteDecompilerShaderContext* shaderContext, Lat
 			src->add("if( isinf(tempResultf) == true && (floatBitsToInt(tempResultf)&0x80000000) != 0 ) tempResultf = -0.0;" _CRLF);
 			src->add("else if( isinf(tempResultf) == true && (floatBitsToInt(tempResultf)&0x80000000) == 0 ) tempResultf = 0.0;" _CRLF);
 		}
+		else if (wwhd_sanitize_on(shaderContext))
+			src->add("tempResultf = wwhd_fin(tempResultf);" _CRLF);
 		// assign result to output
 		_emitInstructionOutputVariableName(shaderContext, aluInstruction);
 		src->add(" = ");
@@ -1303,6 +1322,8 @@ void _emitALUOP2InstructionCode(LatteDecompilerShaderContext* shaderContext, Lat
 		{
 			src->add("if( isinf(tempResultf) == true ) tempResultf = -3.40282347E+38F;" _CRLF);
 		}
+		else if (wwhd_sanitize_on(shaderContext))
+			src->add("tempResultf = wwhd_fin(tempResultf);" _CRLF);
 		// assign result to output
 		_emitInstructionOutputVariableName(shaderContext, aluInstruction);
 		src->add(" = ");
@@ -1328,10 +1349,11 @@ void _emitALUOP2InstructionCode(LatteDecompilerShaderContext* shaderContext, Lat
 		_emitInstructionOutputVariableName(shaderContext, aluInstruction);
 		src->add(" = ");
 		_emitTypeConversionPrefix(shaderContext, LATTE_DECOMPILER_DTYPE_FLOAT, outputType);
-		src->add("exp2");
+		const bool fin = wwhd_sanitize_on(shaderContext);
+		src->add(fin ? "wwhd_fin(exp2" : "exp2");
 		src->add("(");
 		_emitOperandInputCode(shaderContext, aluInstruction, 0, LATTE_DECOMPILER_DTYPE_FLOAT);
-		src->add(")");
+		src->add(fin ? "))" : ")");
 		_emitTypeConversionSuffix(shaderContext, LATTE_DECOMPILER_DTYPE_FLOAT, outputType);
 		src->add(";" _CRLF);
 	}
@@ -1340,10 +1362,11 @@ void _emitALUOP2InstructionCode(LatteDecompilerShaderContext* shaderContext, Lat
 		_emitInstructionOutputVariableName(shaderContext, aluInstruction);
 		src->add(" = ");
 		_emitTypeConversionPrefix(shaderContext, LATTE_DECOMPILER_DTYPE_FLOAT, outputType);
-		src->add("sqrt");
+		const bool fin = wwhd_sanitize_on(shaderContext);
+		src->add(fin ? "wwhd_fin(sqrt" : "sqrt");
 		src->add("(");
 		_emitOperandInputCode(shaderContext, aluInstruction, 0, LATTE_DECOMPILER_DTYPE_FLOAT);
-		src->add(")");
+		src->add(fin ? "))" : ")");
 		_emitTypeConversionSuffix(shaderContext, LATTE_DECOMPILER_DTYPE_FLOAT, outputType);
 		src->add(";" _CRLF);
 	}
@@ -1692,6 +1715,8 @@ void _emitALUOP3InstructionCode(LatteDecompilerShaderContext* shaderContext, Lat
 		if (aluInstruction->opcode == ALU_OP3_INST_MULADD_IEEE)
 			useDefaultMul = true;
 
+		if ((aluInstruction->wwhdMayBeNonFinite & 3) == 0)
+			useDefaultMul = true;  // both operands finite: the GPU's multiply gives the same (wwhd_analyze_finite)
 		if (shaderContext->options->strictMul && useDefaultMul == false)
 		{
 			src->add("mul_nonIEEE(");
@@ -3754,6 +3779,9 @@ void LatteDecompiler_emitGLSLHelperFunctions(LatteDecompilerShaderContext* shade
 
 		// for "min" it used to be: float mul_nonIEEE(float a, float b){ return min(a*b,min(abs(a)*3.40282347E+38F,abs(b)*3.40282347E+38F)); }
 
+		// WWHD: reciprocals, square roots, logs and exponentials kept finite (wwhd_sanitize_on)
+		if (wwhd_sanitize_on(shaderContext))
+			fCStr_shaderSource->add("float wwhd_fin(float v){ return clamp(v, -18446744073709551616.0, 18446744073709551616.0); }" _CRLF);
 		if( LatteGPUState.glVendor == GLVENDOR_NVIDIA && !ActiveSettings::DumpShadersEnabled())
 			fCStr_shaderSource->add("float mul_nonIEEE(float a, float b){return mix(0.0, a*b, (a != 0.0) && (b != 0.0));}" _CRLF); // compiles faster on Nvidia and also results in lower RAM usage (OpenGL)
 		else
@@ -3822,8 +3850,279 @@ void LatteDecompiler_emitAttributeImport(LatteDecompilerShaderContext* shaderCon
 	src->add(");" _CRLF);
 }
 
+
+// WWHD: which multiply operands may be infinite or NaN. The console's MUL / MULADD give
+// 0 * anything = 0 (strictMul emulates it with a compare and a select on each multiply), and
+// that only differs from the GPU's own multiply when the other operand is infinite or NaN. On an
+// Adreno 650 the emulation took ~15% of the GPU's frame (24 ms -> 20 ms with plain multiplies at
+// 1x), almost all of it in pixel shaders where neither operand can be: values only become
+// non-finite through reciprocals, square roots, logs and exponentials, integer bit patterns read as
+// floats, or memory reads. This marks each GPR channel that may hold such a value anywhere in the
+// program (flow-insensitive, so loops and branches are covered; PV/PS by group, conservatively at a
+// clause's start), and each ALU source that may; multiplies whose two operands are finite are
+// emitted as plain multiplies. Uniforms, literals, interpolated inputs, attributes in float or
+// normalized formats and sampled textures are taken as finite (the game's pixel colours are kept
+// finite when written, finiteColorOutputs). WWHD_MUL_ANALYSIS=0: every multiply emulated as before.
+static bool wwhd_op_makes_nonfinite(const LatteDecompilerALUInstruction& a)
+{
+	if (a.isOP3)
+	{
+		switch (a.opcode)
+		{
+		case ALU_OP3_INST_MULADD: case ALU_OP3_INST_MULADD_M2: case ALU_OP3_INST_MULADD_M4: case ALU_OP3_INST_MULADD_D2:
+		case ALU_OP3_INST_MULADD_IEEE: case ALU_OP3_INST_CMOVE: case ALU_OP3_INST_CMOVGT: case ALU_OP3_INST_CMOVGE:
+			return false;  // the sources' finiteness
+		default:
+			return true;  // integer selects and anything else: may carry integer bits
+		}
+	}
+	switch (a.opcode)
+	{
+	case ALU_OP2_INST_ADD: case ALU_OP2_INST_MUL: case ALU_OP2_INST_MUL_IEEE: case ALU_OP2_INST_MAX: case ALU_OP2_INST_MIN:
+	case ALU_OP2_INST_MAX_DX10: case ALU_OP2_INST_MIN_DX10: case ALU_OP2_INST_FLOOR: case ALU_OP2_INST_FRACT:
+	case ALU_OP2_INST_TRUNC: case ALU_OP2_INST_RNDNE: case ALU_OP2_INST_MOV: case ALU_OP2_INST_DOT4: case ALU_OP2_INST_DOT4_IEEE:
+	case ALU_OP2_INST_SIN: case ALU_OP2_INST_COS:
+		return false;  // the sources' finiteness
+	case ALU_OP2_INST_SETE: case ALU_OP2_INST_SETGT: case ALU_OP2_INST_SETGE: case ALU_OP2_INST_SETNE:
+	case ALU_OP2_INST_PRED_SETE: case ALU_OP2_INST_PRED_SETGT: case ALU_OP2_INST_PRED_SETGE: case ALU_OP2_INST_PRED_SETNE:
+	case ALU_OP2_INST_INT_TO_FLOAT: case ALU_OP2_INST_UINT_TO_FLOAT:
+	case ALU_OP2_INST_KILLE: case ALU_OP2_INST_KILLGT: case ALU_OP2_INST_KILLGE:
+	case ALU_OP2_INST_RECIP_IEEE: case ALU_OP2_INST_RECIPSQRT_IEEE: case ALU_OP2_INST_SQRT_IEEE:
+	case ALU_OP2_INST_LOG_IEEE: case ALU_OP2_INST_EXP_IEEE:
+		return false;  // 1.0 / 0.0, a converted integer, or kept finite (wwhd_fin): whatever the sources (below)
+	case ALU_OP2_INST_RECIP_CLAMPED: case ALU_OP2_INST_RECIP_FF: case ALU_OP2_INST_LOG_CLAMPED:
+		return false;  // infinity clamped: the sources' finiteness
+	default:
+		return true;  // reciprocals, square roots, logs, exponentials, cube, integer and bit operations
+	}
+}
+
+static bool wwhd_op_result_ignores_sources(const LatteDecompilerALUInstruction& a)
+{
+	if (a.isOP3)
+		return false;
+	switch (a.opcode)
+	{
+	case ALU_OP2_INST_SETE: case ALU_OP2_INST_SETGT: case ALU_OP2_INST_SETGE: case ALU_OP2_INST_SETNE:
+	case ALU_OP2_INST_PRED_SETE: case ALU_OP2_INST_PRED_SETGT: case ALU_OP2_INST_PRED_SETGE: case ALU_OP2_INST_PRED_SETNE:
+	case ALU_OP2_INST_INT_TO_FLOAT: case ALU_OP2_INST_UINT_TO_FLOAT:
+	case ALU_OP2_INST_RECIP_IEEE: case ALU_OP2_INST_RECIPSQRT_IEEE: case ALU_OP2_INST_SQRT_IEEE:
+	case ALU_OP2_INST_LOG_IEEE: case ALU_OP2_INST_EXP_IEEE:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static uint32 wwhd_alu_source_count(const LatteDecompilerALUInstruction& a)
+{
+	return a.isOP3 ? 3 : 2;
+}
+
+struct WWHDFiniteState
+{
+	uint8 gpr[LATTE_NUM_GPR * 4]{};  // 1: may be non-finite
+	bool changed{};
+	bool overwrite{};                // a write replaces what the channel held (straight-line code)
+	void taint(uint32 index)
+	{
+		if (index < LATTE_NUM_GPR * 4 && !gpr[index]) { gpr[index] = 1; changed = true; }
+	}
+	void write(uint32 index, bool nf)
+	{
+		if (nf) taint(index);
+		else if (overwrite && index < LATTE_NUM_GPR * 4) gpr[index] = 0;
+	}
+	void taintAll()
+	{
+		for (uint32 i = 0; i < LATTE_NUM_GPR * 4; i++) taint(i);
+	}
+	void merge(const WWHDFiniteState& o)
+	{
+		for (uint32 i = 0; i < LATTE_NUM_GPR * 4; i++) gpr[i] |= o.gpr[i];
+	}
+	bool anyGpr() const
+	{
+		for (uint32 i = 0; i < LATTE_NUM_GPR * 4; i++)
+			if (gpr[i]) return true;
+		return false;
+	}
+};
+
+static void wwhd_analyze_clause(WWHDFiniteState& st, LatteDecompilerCFInstruction& cf)
+{
+	for (auto& t : cf.instructionsTEX)
+	{
+		const bool finite = (t.opcode >= GPU7_TEX_INST_SAMPLE && t.opcode <= GPU7_TEX_INST_SAMPLE_C_LZ) || t.opcode == GPU7_TEX_INST_FETCH4 ||
+		                    t.opcode == GPU7_TEX_INST_GET_COMP_TEX_LOD || t.opcode == GPU7_TEX_INST_GET_GRADIENTS_H ||
+		                    t.opcode == GPU7_TEX_INST_GET_GRADIENTS_V || t.opcode == GPU7_TEX_INST_SET_GRADIENTS_H ||
+		                    t.opcode == GPU7_TEX_INST_SET_GRADIENTS_V || t.opcode == GPU7_TEX_INST_SET_CUBEMAP_INDEX ||
+		                    t.opcode == GPU7_TEX_INST_VFETCH;  // a uniform block's vec4 (bone matrices), as uniforms
+		if (t.dstGpr < 0)
+			continue;
+		for (uint32 c = 0; c < 4; c++)
+			if (t.dstSel[c] != 7)
+				st.write((uint32)t.dstGpr * 4 + c, !finite);
+	}
+	auto& alu = cf.instructionsALU;
+	bool prevPV[5] = {true, true, true, true, true};  // a clause's first group reads nothing defined
+	bool curPV[5] = {true, true, true, true, true};
+	size_t groupStart = 0;
+	while (groupStart < alu.size())
+	{
+		size_t groupEnd = groupStart;
+		while (groupEnd < alu.size() && alu[groupEnd].instructionGroupIndex == alu[groupStart].instructionGroupIndex)
+			groupEnd++;
+		// the group's sources, as the group reads them (before its writes)
+		bool reduction = false;
+		for (size_t i = groupStart; i < groupEnd; i++)
+		{
+			auto& a = alu[i];
+			uint8 bits = 0;
+			for (uint32 f = 0; f < wwhd_alu_source_count(a); f++)
+			{
+				const uint32 sel = a.sourceOperand[f].sel;
+				bool nf = false;
+				if (GPU7_ALU_SRC_IS_GPR(sel))
+					nf = a.sourceOperand[f].rel ? st.anyGpr() : st.gpr[GPU7_ALU_SRC_GET_GPR_INDEX(sel) * 4 + (a.sourceOperand[f].chan & 3)] != 0;
+				else if (GPU7_ALU_SRC_IS_PV(sel))
+					nf = prevPV[a.sourceOperand[f].chan & 3];
+				else if (GPU7_ALU_SRC_IS_PS(sel))
+					nf = prevPV[4];
+				else if (!(GPU7_ALU_SRC_IS_CBANK0(sel) || GPU7_ALU_SRC_IS_CBANK1(sel) || GPU7_ALU_SRC_IS_CFILE(sel) || GPU7_ALU_SRC_IS_LITERAL(sel) ||
+				           GPU7_ALU_SRC_IS_ANY_CONST(sel)))
+					nf = true;  // anything else (special values): taken as may be
+				if (nf)
+					bits |= 1 << f;
+			}
+			a.wwhdMayBeNonFinite = bits;
+			if (!a.isOP3 && (a.opcode == ALU_OP2_INST_DOT4 || a.opcode == ALU_OP2_INST_DOT4_IEEE || a.opcode == ALU_OP2_INST_CUBE) && bits)
+				reduction = true;
+		}
+		for (uint32 u = 0; u < 5; u++)
+			curPV[u] = true;  // a unit the group doesn't use: nothing known
+		for (size_t i = groupStart; i < groupEnd; i++)
+		{
+			auto& a = alu[i];
+			if (!a.isOP3 && a.opcode == ALU_OP2_INST_NOP)
+				continue;
+			bool nf = wwhd_op_makes_nonfinite(a);
+			if (!wwhd_op_result_ignores_sources(a))
+			{
+				nf = nf || (a.wwhdMayBeNonFinite & ((1 << wwhd_alu_source_count(a)) - 1)) != 0;
+				if (!a.isOP3 && (a.opcode == ALU_OP2_INST_DOT4 || a.opcode == ALU_OP2_INST_DOT4_IEEE))
+					nf = nf || reduction;
+			}
+			if (a.aluUnit < 5)
+				curPV[a.aluUnit] = nf;
+			if (a.writeMask)
+			{
+				if (a.destRel)
+				{
+					if (nf) st.taintAll();  // some channel, unknown: a finite value replaces none for sure
+				}
+				else
+					st.write(a.destGpr * 4 + (a.destElem & 3), nf);
+			}
+		}
+		for (uint32 u = 0; u < 5; u++)
+			prevPV[u] = curPV[u];
+		groupStart = groupEnd;
+	}
+}
+
+static bool wwhd_mul_analysis_on()
+{
+	static const bool on = !getenv("WWHD_MUL_ANALYSIS") || atoi(getenv("WWHD_MUL_ANALYSIS")) != 0;
+	return on;
+}
+
+static void wwhd_analyze_finite(LatteDecompilerShaderContext* shaderContext)
+{
+	if (!wwhd_mul_analysis_on() || !shaderContext->options->strictMul)
+		return;
+	WWHDFiniteState st;  // the whole program, flow-insensitive: every channel any write may leave non-finite
+	if (shaderContext->shaderType == LatteConst::ShaderType::Vertex)
+	{
+		st.taint(0 * 4 + 0);  // R0: vertex and instance index, integers
+		st.taint(0 * 4 + 3);
+		if (LatteFetchShader* fs = shaderContext->fetchShader)
+		{
+			auto mark = [&](LatteParsedFetchShaderAttribute& attrib) {
+				if (attrib.nfa != 1)
+					return;  // floats, normalized or scaled
+				for (sint32 f = 0; f < 32; f++)
+					if (shaderContext->contextRegisters[mmSQ_VTX_SEMANTIC_0 + f] == attrib.semanticId)
+					{
+						for (uint32 c = 0; c < 4; c++)
+							st.taint((f + 1) * 4 + c);
+						break;
+					}
+			};
+			for (auto& g : fs->bufferGroups)
+				for (sint32 i = 0; i < g.attribCount; i++)
+					mark(g.attrib[i]);
+			for (auto& g : fs->bufferGroupsInvalid)
+				for (sint32 i = 0; i < g.attribCount; i++)
+					mark(g.attrib[i]);
+		}
+	}
+	else if (shaderContext->shaderType != LatteConst::ShaderType::Pixel)
+	{
+		st.taintAll();  // geometry shaders: not analysed
+	}
+	const WWHDFiniteState initial = st;
+	// to a fixed point (taints only grow): each pass sees the GPRs any later instruction marked
+	for (int pass = 0; pass < 16; pass++)
+	{
+		st.changed = false;
+		for (auto& cf : shaderContext->cfInstructions)
+			wwhd_analyze_clause(st, cf);
+		for (auto& sub : shaderContext->list_subroutines)
+			for (auto& cf : sub.instructions)
+				wwhd_analyze_clause(st, cf);
+		if (!st.changed)
+			break;
+		if (pass == 15)
+			st.taintAll();
+	}
+	// the operand bits from the program-wide state (subroutines keep these)
+	for (auto& cf : shaderContext->cfInstructions)
+		wwhd_analyze_clause(st, cf);
+	for (auto& sub : shaderContext->list_subroutines)
+		for (auto& cf : sub.instructions)
+			wwhd_analyze_clause(st, cf);
+	// then in program order, where registers are reused for other values: a write in straight-line
+	// code replaces what the channel held; in a clause that may not run for every pixel (inside an
+	// if, else or loop: active stack depth above 0, or a clause that pushes / pops) the channel may
+	// still hold the earlier value, so it only adds. Entering a loop or calling a subroutine: anything
+	// the program writes anywhere (the program-wide state)
+	WWHDFiniteState flow = initial;
+	int loops = 0;
+	for (auto& cf : shaderContext->cfInstructions)
+	{
+		if (cf.type == GPU7_CF_INST_LOOP_START_DX10 || cf.type == GPU7_CF_INST_LOOP_START_NO_AL)
+		{
+			loops++;
+			flow.merge(st);
+		}
+		else if (cf.type == GPU7_CF_INST_LOOP_END)
+		{
+			if (loops > 0) loops--;
+			flow.merge(st);
+		}
+		else if (cf.type == GPU7_CF_INST_CALL || cf.type == GPU7_CF_INST_CALL_FS)
+			flow.merge(st);
+		if (cf.instructionsALU.empty() && cf.instructionsTEX.empty())
+			continue;
+		flow.overwrite = loops == 0 && cf.activeStackDepth == 0 && (cf.type == GPU7_CF_INST_ALU || cf.type == GPU7_CF_INST_TEX);
+		wwhd_analyze_clause(flow, cf);
+	}
+}
+
 void LatteDecompiler_emitGLSLShader(LatteDecompilerShaderContext* shaderContext, LatteDecompilerShader* shader)
 {
+	wwhd_analyze_finite(shaderContext);
 	StringBuf* src = new StringBuf(1024*1024); // 1 MB for the generated source, grows if needed (resized to fit at the end)
 	shaderContext->shaderSource = src;
 	// GLSL shader header

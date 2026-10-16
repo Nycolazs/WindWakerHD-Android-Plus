@@ -54,6 +54,85 @@ Get the latest APK from the **[Releases page](../../releases/latest)**.
 
 ## What's new in Plus
 
+### 🆕 New in v1.11: 16% less GPU work, a cleaner 60 fps, saves that survive updates, a real autosave, clean screen edges
+- **60 fps (generated) redone: no torn objects in fast camera turns, no halos around the HUD.**
+  The in-between frame used to look, for each pixel, for the scene's pixel that lands there; where
+  something near stands in front of something far that search has two answers, and in a fast turn
+  thin parts (the King of Red Lions' fins, railings, leaves) came out torn into strips or doubled
+  at the screen's edge. The scene is now moved as a mesh (a point every 2-3 pixels, each moved by
+  the camera's and the object's own movement, with a depth test): what is near always covers what
+  is far, and what a near object uncovers is filled from what is behind it. The HUD is no longer
+  told apart by comparing pictures: every HUD draw also writes how much of the scene it covers, so
+  the scene moves behind translucent icons, frames and glows too, while the HUD itself stays still.
+  It costs ~1.9 ms of GPU per generated frame more than before (S20 FE at 1.5x: 23.9 ms per pair of
+  frames out of 33).
+- **The game no longer runs twice as fast at 120 Hz and above** with 60 fps (generated) on a phone
+  whose screen runs at 120 Hz (the game's step was paced at the screen's refresh instead of 30 Hz).
+- **Autosave without the freeze**: an autosave held the game for 0.4-1.6 s (writing ~235 MB with the
+  game stopped). The memory is now written ahead, while the game runs, and at the autosave only what
+  changed since (a few MB) is taken: the game stops for 0.1-0.3 s, at a moment where it isn't felt
+  (a menu, a dialogue, just after entering an area). The save threads also no longer crowd the one
+  core the game runs on, which made every save state faster.
+- **Protection against a crash that comes back at every start**: a shader or pipeline the GPU driver
+  crashes on is remembered and skipped the next time, so the game can't be stuck crashing on the
+  loading screen (reported after entering Beedle's shop from the boat; it wasn't reproduced here,
+  but whatever the driver crashed on is now left out at the next start). A crash log is still kept.
+- **A controller connected: touching the screen no longer brings the on-screen controls back.** With
+  **Controls act as: Wii U GamePad** the controller works as the GamePad and the game's menus can be
+  tapped as on the GamePad. In Pro Controller mode the game's menus don't take touches (as on the
+  console); a touch in a menu says where to change it.
+- **Saves that are never lost again** (**Saves → Saves outside the app**): allow Android's **"All files
+  access"** once and the app keeps a copy of your game save, **your save states** and your settings
+  in the **`WindWakerHD Plus`** folder of your phone, updated as they change. That folder stays when
+  the app is uninstalled, so an update signed with another key (which Android only installs after
+  uninstalling the old app) or a reinstall **brings everything back by itself** the first time the
+  game starts without a save. With the access the app also finds the automatic backups of earlier
+  versions in `Download/WindWakerHD Saves`.
+- **Autosave on by default, and when you leave the game**: a state in the **Auto** slot every 5
+  minutes of play (1, 2, 5 or 10 in **Saves → Autosave**), and another one as you lock the phone or
+  switch apps, where Android may close the game without a word. The game pauses once it is written.
+- **The controller select and file select screens no longer flicker at the edges**: their
+  background, drawn to the TV and the GamePad at once, was now and then stretched over the wider
+  picture for a frame (the screen each layout was last drawn to raced the render thread).
+- **No more dark band or glow along the screen edges**: the widened and half-size buffers were
+  created a fraction of a pixel larger than what was drawn into them, so their last column (or row)
+  kept an old picture or the clear colour, and the bloom, blur and ambient occlusion spread it into
+  a dark or bluish band along the right and bottom edges (seen at 1x and 1.5x on a 20:9 screen).
+  The 1-pixel bars beside a picture of almost the window's shape are gone too.
+- **The graphics rewritten for phone GPUs: −16% of GPU work per frame, the same picture.** On a
+  Galaxy S20 FE at 1x (Outset at night, the same frame each time) the GPU now works **20.5 ms a
+  frame instead of 24.4**, with nothing turned off: a frame rendered both ways is identical (2 of
+  1.15 million pixels differ by 1/255).
+  - **The console's multiply without its cost** (−3.5 ms): the Wii U's GPU gives 0 × anything = 0,
+    so every multiply in the translated shaders was a compare, a select and the multiply, ~16,000 of
+    them in the game's shaders. The translator now proves, for each multiply, that neither operand
+    can be infinite or NaN (a value only becomes one through a reciprocal, square root, log or
+    exponential, integer bits read as a float, or a memory read; register by register, following
+    the program's flow), and emits a plain multiply there. The reciprocals, roots, logs and
+    exponentials themselves are kept finite (±2⁶⁴ instead of ±infinity, so 0 times them is still 0
+    as on the console). Pixel shaders: 8,699 emulated multiplies → 226; vertex shaders 8,487 → 471.
+    The first start after updating prepares the shaders again (once).
+  - **No more scene passes broken in the middle** (−0.5 ms): a texture drawn earlier in the frame
+    and first read in the middle of the scene pass needed a layout change, which ended the pass:
+    the GPU stored the whole scene (colour, its second target and depth, ~15 MB) and loaded it back,
+    four times a frame. Each pass now remembers what it reads and gets it ready before it begins:
+    the scene is drawn in 2 passes instead of 5.
+  - Clears are done by the render pass that draws next instead of being written to memory and read
+    back (saves a full write and read of each cleared target on GPUs that render in tiles: Mali,
+    Turnip; Qualcomm's own driver already did this by itself).
+  - The game's blur reads one tap at 1x on a 20:9 screen again (the area-sampled taps meant for
+    higher resolutions were used for the widened buffers too).
+  - **Dynamic resolution follows the GPU load too**: while the GPU can't keep up, the 3D resolution
+    steps down (to 0.6x on weaker phones), and back up when there is room again.
+  - **Graphics: Light** (**Graphics → Graphics**), for weaker GPUs: no ambient occlusion and no
+    distant shadows (19.3 ms instead of 20.5 on the S20 FE). Adreno 5xx and the smaller 6xx, Mali
+    G31–G72 and PowerVR start with it.
+- **Defaults for a new install**: **30 fps** (the game's own rate and the lightest; 60 fps generated
+  is a choice in **Graphics → Frame rate**), Original resolution (720p), the phone's language for the
+  app and the game. **Game → Game language** lists **Português (Brasil)** (the built-in translation).
+- **Release builds refuse to be signed with a debug key** (v1.10 was, which is why it couldn't be
+  updated over v1.9 and v1.11 can't be installed over it).
+
 ### 🆕 New in v1.10: smooth area changes, no black flashes, save states that don't close the game, a cool phone in your pocket
 - **Much smoother when going from one area to another**: entering an area translated hundreds of
   shaders again for 2-4 frames (100-230 ms stutters), even in an area visited minutes before, and
@@ -281,8 +360,10 @@ Put **one** of these in a folder on your phone (for example `Download/WindWakerH
 > 3. Set up the game again. When it starts without a save, the app offers to restore one: pick the
 >    folder you exported to (or **Saves → Import saves** at any time).
 >
-> v1.7–v1.9 install over each other directly. **v1.10 is signed with a different key**: export your saves,
-> uninstall the old version and install v1.10 the same way (steps 1–3).
+> v1.7–v1.9 install over each other directly. **v1.10 was signed with a different key**: export your
+> saves, uninstall it and install v1.11 the same way (steps 1–3). v1.11 installs directly over v1.7–v1.9.
+> From v1.11 on, with **Saves → Saves outside the app** allowed, a reinstall brings your save, save
+> states and settings back by itself.
 
 ---
 
@@ -326,15 +407,17 @@ Open the settings with **≡** (or hold Select / press Home on a controller).
 
 | Tab | Highlights |
 |---|---|
-| **Saves** | 5 save-state slots with pictures; import and export of your game saves; **automatic save backup** |
+| **Saves** | 5 save-state slots with pictures and the **Auto** slot (every 5 minutes and when you leave the game); import and export of your game saves; **saves outside the app** (they survive reinstalls); **automatic save backup** |
 | **Game** | Game language, **App language**, Menu size |
-| **Graphics** | Frame rate (30 / **60 generated** / 60 / 60 adaptive), CPU cores, rendering resolution, widescreen, screen layout, **HUD layout**, ambient occlusion, bloom, **distant shadows**, performance overlay, GPU driver, **GPU safe mode** |
+| **Graphics** | Frame rate (**30** / 60 generated / 60), **Graphics: Quality / Light**, CPU cores, rendering resolution, **dynamic resolution**, widescreen, screen layout, **HUD layout**, ambient occlusion, bloom, **distant shadows**, performance overlay, GPU driver, **GPU safe mode** |
 | **Mods** | **Portuguese translation**, cheats (with moon jump), **button icons (Wii U / Xbox / PlayStation)**, direct camera, first person on R3, climb any wall, quick doors, fast scene changes, fast-forward cutscenes and dialogue, faster running and swimming |
 | **Controls** | On-screen controls, **camera stick**, edit touch layout, camera speed, combat buttons, vibration, GamePad / Pro Controller mode, **motion controls**, rumble, controller buttons |
 
 ### Recommended settings
-- **Frame rate:** 60 fps (generated), the default. It is smooth everywhere and only needs the
-  phone to run the game at 30. On a very fast phone you can try 60 fps, which draws every frame.
+- **Frame rate:** 30 fps, the default and the lightest. 60 fps (generated) is smooth everywhere
+  and only needs the phone to run the game at 30, with some extra GPU work per frame. On a very
+  fast phone you can try 60 fps, which draws every frame.
+- **Weaker phone:** **Graphics → Graphics: Light**, and keep **Dynamic resolution** on.
 - **CPU cores:** Prime core (game) — the default.
 - **Rendering resolution:** Original (720p) on mid-range or older phones; 1.5× (1080p) on
   recent flagship phones.

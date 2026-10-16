@@ -6,7 +6,10 @@
 // a fine grid shows around everything standing on the ground. Each tap of these two shaders averages
 // bilinear samples spread over one guest texel instead, each sample covering about 2x2 image texels:
 // n = max(2, ceil(scale / 2)) per axis above 1x (4 reads at 2x-4x; the original project's ceil(scale)^2
-// was 9 at 3x and cost a lot of GPU time). At scale 1 it is the game's one sample.
+// was 9 at 3x and cost a lot of GPU time). Up to a scale of 1.47 it is the game's one sample: taps
+// 1.36 guest texels apart are then at most 2 image texels apart, which bilinear taps cover without a
+// gap (at 1x on a 20:9 screen the widened buffers have a scale of 1.249, and the 2x2 reads per tap
+// cost ~1 ms of an Adreno 650's frame for nothing).
 #pragma once
 #include <bit>
 #include <cstdint>
@@ -59,7 +62,7 @@ inline int rewrite(std::string& src, uint32_t units) {
     static const char* const kGlsl =
         "// area-sampled tap for upscaled render targets (runtime/src/vk/area_sample.h)\n"
         "vec4 wwhdAreaSample(sampler2D t, vec2 scale, vec2 uv) {\n"
-        "    if (scale.x <= 1.001 && scale.y <= 1.001) return texture(t, uv);\n"
+        "    if (scale.x <= 1.47 && scale.y <= 1.47) return texture(t, uv);\n"
         "    vec2 k = max(ceil(scale * 0.5 - 0.001), vec2(2.0));\n"
         "    vec2 step = scale / (vec2(textureSize(t, 0)) * k);\n"
         "    vec4 sum = vec4(0.0);\n"
