@@ -752,13 +752,47 @@ static const struct { uint32_t first, count; } kKeyRegs[] = {
 // A pixel shader's key leaves out the vertex fetch semantics (SQ_VTX_SEMANTIC_*: only vertex shaders
 // read them, for their attribute loads), which changed with every mesh drawn; `legacy` keeps them
 // (the keys the cache's pipeline recipes were recorded with).
+// The colour target registers enter a translation only through which targets the pixel shader
+// writes (LatteMRT::GetActiveColorBufferMask: colour output disabled, a target whose channel mask is
+// all zero) and each target's format, number type and tiling (the analyzer's render-target-as-texture
+// check). Their other bits are pipeline state (blend and ROP, which channels are written, rounding,
+// endianness) and, in the key, made every area load translate hundreds of shaders again (100-230 ms
+// hitches on entering an area, also one visited before), with the same GLSL each time. `cbFull` keeps
+// the whole words and the unused slots below (the keys of the v1.9 cache's pipeline recipes); a vertex
+// shader reads none of them.
+static uint32_t cb_key_word(const uint32_t* regs, uint32_t r, bool vertex) {
+    const uint32_t v = regs[r];
+    if (vertex) return 0;
+    if (r == REGADDR::CB_COLOR_CONTROL) return ((v >> 4) & 7) == 1;  // SPECIAL_OP == DISABLE
+    if (r == REGADDR::CB_TARGET_MASK) {
+        uint32_t m = 0;
+        for (int i = 0; i < 8; i++) m |= ((v >> (i * 4)) & 0xF) ? 1u << i : 0;
+        return m;
+    }
+    return v & 0x7FFC;  // CB_COLORn_INFO: format, array (tile) mode, number type
+}
+
 static uint32_t stage_state_words(const uint32_t* regs, uint32_t texBase, uint32_t* buf, uint32_t texMask = 0x3FFFF,
-                                  uint64_t samplerMask = ~0ull, bool legacy = false) {
+                                  uint64_t samplerMask = ~0ull, bool legacy = false, bool cbFull = false) {
     uint32_t n = 0;
+    const bool pixel = texBase == REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
     for (auto& k : kKeyRegs) {
         memcpy(&buf[n], &regs[k.first], k.count * 4);
-        if (k.first == mmSQ_VTX_SEMANTIC_0 && !legacy && texBase == REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS)
+        if (k.first == mmSQ_VTX_SEMANTIC_0 && !legacy && pixel)
             memset(&buf[n], 0, k.count * 4);
+        if (!legacy && !cbFull && (k.first == REGADDR::CB_COLOR_CONTROL || k.first == REGADDR::CB_TARGET_MASK || k.first == mmCB_COLOR0_INFO))
+            for (uint32_t i = 0; i < k.count; i++) buf[n + i] = cb_key_word(regs, k.first + i, !pixel);
+        // slots past those in use keep an earlier shader's values: the vertex shader's exports
+        // (SPI_VS_OUT_CONFIG VS_EXPORT_COUNT + 1, four semantic IDs per register) and the pixel
+        // shader's inputs (SPI_PS_IN_CONTROL_0 NUM_INTERP); the decompiler reads no further
+        if (!legacy && !cbFull && k.first == mmSPI_VS_OUT_ID_0) {
+            const uint32_t used = (((regs[mmSPI_VS_OUT_CONFIG] >> 1) & 0x1F) + 1 + 3) / 4;
+            for (uint32_t i = used; i < k.count; i++) buf[n + i] = 0;
+        }
+        if (!legacy && !cbFull && k.first == mmSPI_PS_INPUT_CNTL_0) {
+            const uint32_t used = regs[mmSPI_PS_IN_CONTROL_0] & 0x3F;
+            for (uint32_t i = used; i < k.count; i++) buf[n + i] = 0;
+        }
         n += k.count;
     }
     uint32_t cbBase[8];
@@ -956,18 +990,45 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
         else k ^= link.key * 37 ^ (uint64_t)area * 0x9E3779B97F4A7C15ull;  // link.key 0 when every input is fed
         return k;
     };
+    uint64_t v19Key = 0;  // the key as v1.9 made it (whole colour target words), for its recipes
     if (g_cache_replaying) {
         uint32_t full[400];
         uint32_t fn = stage_state_words(regs, texBase, full, 0x3FFFF, ~0ull, true);
         oldKey = finish_key(key, full, fn);
+        fn = masked ? stage_state_words(regs, texBase, full, pt->second.tex, pt->second.samplers, false, true)
+                    : stage_state_words(regs, texBase, full, 0x3FFFF, ~0ull, false, true);
+        v19Key = finish_key(key, full, fn);
     }
     if (m.s && m.base == base && m.fsKey == fk && m.n == n && memcmp(m.words, words, n * 4) == 0) {
         if (oldKey && oldKey != m.s->key) g_key_alias[oldKey] = m.s;
+        if (v19Key && v19Key != m.s->key) g_key_alias[v19Key] = m.s;
         return m.s;
     }
     key = finish_key(key, words, n);
+    // debug: WWHD_KEY_DIFF=1 logs which state words made a known program into a new shader key
+    static const bool keyDiff = getenv("WWHD_KEY_DIFF") != nullptr;
+    if (keyDiff && !g_shaders.count(key)) {
+        struct Seen { uint32_t n; uint32_t w[400]; uint64_t fk; };
+        static std::unordered_map<uint64_t, Seen> seen;
+        static int logged = 0;
+        auto sit = seen.find(base);
+        if (sit != seen.end() && logged < 400) {
+            std::string d;
+            for (uint32_t i = 0; i < std::min(n, sit->second.n) && d.size() < 300; i++)
+                if (words[i] != sit->second.w[i]) d += " [" + std::to_string(i) + "] " + std::to_string(sit->second.w[i]) + "->" + std::to_string(words[i]);
+            if (fk != sit->second.fk) d += " fk";
+            if (n != sit->second.n) d += " n";
+            LOG("[keydiff] %s %016llx:%s", vertex ? "vs" : "ps", (unsigned long long)base, d.c_str());
+            logged++;
+        }
+        Seen& sn = seen[base];
+        sn.n = n;
+        memcpy(sn.w, words, n * 4);
+        sn.fk = fk;
+    }
     auto remember = [&](Shader* sh) {
         if (oldKey && oldKey != sh->key) g_key_alias[oldKey] = sh;
+        if (v19Key && v19Key != sh->key) g_key_alias[v19Key] = sh;
         m.base = base;
         m.fsKey = fk;
         m.n = n;
@@ -1006,6 +1067,7 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
             g_shaders[key] = s;
             hot = {key, s};
             if (oldKey && oldKey != key) g_key_alias[oldKey] = s;
+            if (v19Key && v19Key != key) g_key_alias[v19Key] = s;
             g_shaders_reused++;
             return remember(s);
         }
@@ -1016,6 +1078,7 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
     g_shaders[key] = s;
     hot = {key, s};
     if (oldKey && oldKey != key) g_key_alias[oldKey] = s;
+    if (v19Key && v19Key != key) g_key_alias[v19Key] = s;
     double t0 = now_ms();
     LatteShader_UpdatePSInputs((uint32*)regs);
     LatteDecompilerOptions opt;

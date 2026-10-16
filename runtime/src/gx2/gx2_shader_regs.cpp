@@ -56,8 +56,11 @@ void bind_vertex_shader_regs(uint32* regs, uint32 vs) {
     }
     uint32 nsem = std::min<uint32>(ld32(vs + VS_SEMANTIC_COUNT), 32);
     if (nsem > 0) {
+        // SQ_VTX_SEMANTIC_CLEAR resets the whole table on the GPU: the entries past this shader's are
+        // unmapped (0xFF), not the previous shader's (which the attribute lookup could match, and
+        // which made every draw order a new shader key: area entries translated hundreds again)
         regs[mmSQ_VTX_SEMANTIC_CLEAR] = 0xFFFFFFFF;
-        for (uint32 i = 0; i < nsem; i++) regs[mmSQ_VTX_SEMANTIC_0 + i] = ld32(vs + VS_SEMANTIC + 4 * i);
+        for (uint32 i = 0; i < 32; i++) regs[mmSQ_VTX_SEMANTIC_0 + i] = i < nsem ? ld32(vs + VS_SEMANTIC + 4 * i) : 0xFF;
     }
 }
 
