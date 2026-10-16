@@ -160,6 +160,16 @@ void test_goto(input::PadState& s) {
     s.lx = std::sin(phi);
     s.ly = std::cos(phi);
 }
+// test aid: WWHD_TEST_POSLOG=1 logs Link's position, heading and the stage every second
+void test_poslog() {
+    static const bool on = getenv("WWHD_TEST_POSLOG") != nullptr;
+    static uint64_t lastStep = 0;
+    if (!on || step() < lastStep + 30) return;
+    lastStep = step();
+    uint32_t l = g_link.load(std::memory_order_relaxed);
+    if (!l) return;
+    LOG("[pos] %.0f %.0f %.0f heading %d", ldf32(l + 0x314), ldf32(l + 0x318), ldf32(l + 0x31C), (int)(int16_t)ld16(l + 0x322));
+}
 bool test_mouse() {
     static const bool on = getenv("WWHD_TEST_MOUSE") != nullptr;
     return on;
@@ -187,6 +197,7 @@ void filter_pad(input::PadState& s) {
     stick_input(s.lx, s.ly);  // the moon jump's steering (cheats.cpp)
     inject_test_mouse();
     test_goto(s);
+    test_poslog();
     uint64_t now = step();
     std::lock_guard<std::mutex> lk(g_mu);
     // stale movement (the camera never took it, e.g. during an event) is dropped

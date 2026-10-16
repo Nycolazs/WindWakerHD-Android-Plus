@@ -161,6 +161,19 @@ static void write_crash_log(Cpu* c, const std::string& file, uint32_t line, cons
             crash_log_write(buf, std::min<int>(n, sizeof buf - 1));
         }
     }
+    // sead formats the whole halt text (file, line, the check's description) into a stack buffer
+    {
+        uint32_t sp = c->r[1];
+        for (uint32_t o = 0; o < 0x800; o += 4) {
+            const char* s = (const char*)mem::ptr(sp + o);
+            if (memcmp(s, "\n//====", 8) != 0) continue;
+            std::string t(s, strnlen(s, 700));
+            LOG("[halt] %s", t.c_str());
+            n = snprintf(buf, sizeof buf, "  halt text:\n%s\n", t.c_str());
+            crash_log_write(buf, std::min<int>(n, sizeof buf - 1));
+            break;
+        }
+    }
     crash_log_details();
     n = snprintf(buf, sizeof buf, "  60 fps pass: %s; true 60 %s, half pass %d, executing process %08X", interp::phase_name(),
                  true60::enabled() ? "on" : "off", (int)true60::half_pass(), true60::exec_proc());
