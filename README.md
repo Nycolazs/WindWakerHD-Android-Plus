@@ -281,7 +281,8 @@ Put **one** of these in a folder on your phone (for example `Download/WindWakerH
 > 3. Set up the game again. When it starts without a save, the app offers to restore one: pick the
 >    folder you exported to (or **Saves → Import saves** at any time).
 >
-> From v1.7 on, updates install over the app directly and keep everything.
+> v1.7–v1.9 install over each other directly. **v1.10 is signed with a different key**: export your saves,
+> uninstall the old version and install v1.10 the same way (steps 1–3).
 
 ---
 
