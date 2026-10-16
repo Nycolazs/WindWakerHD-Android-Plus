@@ -54,6 +54,23 @@ Get the latest APK from the **[Releases page](../../releases/latest)**.
 
 ## What's new in Plus
 
+### 🆕 New in v1.11.1: Beedle's shop no longer closes the game, a steady 60 fps (generated), a round telescope
+- **Leaving Beedle's Shop Ship no longer closes the game** (and the game starts normally again): on
+  the way out the game sails you back to the sea room it noted on the way in, and halts if that room
+  is missing (its own check, `d_stage.cpp`). The room is now made sure of when you go in and when you
+  come out (from the ship's position on the sea when the game has none). Tested going in, talking
+  or not, walking out, going in again and out again.
+- **60 fps (generated) without trembling**: the in-between frame now decides, for every 4x4 pixels,
+  whether that part of the picture stays still in the world, follows the camera (Link, his boat, the
+  title's boat) or moves on its own, by checking each against the previous picture. Deciding it per
+  16x16 block split objects in two (the title's dragon came out torn and shaking). On the title
+  screen the depth of Outset was also lost (the game draws the boat over a cleared depth buffer):
+  it is now kept, so the cliffs and the bridge move exactly half-way in the in-between frame. The
+  same GPU time as before.
+- **The telescope's round view is round again** with a widescreen picture (it was stretched into an
+  ellipse with the rest of the first-person view's frame).
+- No more message about tapping the menus in Pro Controller mode.
+
 ### 🆕 New in v1.11: 16% less GPU work, a cleaner 60 fps, saves that survive updates, a real autosave, clean screen edges
 - **60 fps (generated) redone: no torn objects in fast camera turns, no halos around the HUD.**
   The in-between frame used to look, for each pixel, for the scene's pixel that lands there; where

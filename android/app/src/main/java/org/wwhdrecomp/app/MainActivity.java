@@ -1315,24 +1315,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 }
                 if (lastController != null) inputSource(null);  // playing by touch
             }
-            hintProTouch();
         }
         return super.dispatchTouchEvent(e);
-    }
-
-    // Pro Controller mode has no touch screen: the game's menus are on the TV, worked with the stick,
-    // and the game ignores the GamePad's touches. Switching the controls to the GamePad while one of
-    // its menus is open doesn't help: the game takes it as the Pro Controller going away and holds the
-    // menu on the TV until one is connected again (the menu could no longer be closed). A touch in a
-    // menu says once per session how to tap the menus: the GamePad controls, with which a connected
-    // controller acts as the GamePad and the on-screen controls stay hidden.
-    private boolean proTouchHinted;
-
-    private void hintProTouch() {
-        if (proTouchHinted || Native.getOption("pro_controller") == 0 || !Native.menuOpen()) return;
-        proTouchHinted = true;
-        android.widget.Toast.makeText(this, getString(R.string.pro_touch_hint, getString(R.string.controller_gamepad)),
-                android.widget.Toast.LENGTH_LONG).show();
     }
 
     void setProController(boolean on) {

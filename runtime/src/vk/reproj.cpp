@@ -82,7 +82,7 @@ vec2 objectMove(vec2 q, float z, float fw) {
  if (f.w < 0.5) return vec2(0.0);
  float bz = p.z.x * exp(f.z * log(p.z.y / p.z.x));
  if (abs(z - bz) > 0.15 * bz) return vec2(0.0);
- return (f.xy - 0.5) * (0.5 / 8.0) * (1.0 - fw);  // (what follows the camera already keeps its place)
+ return f.xy * 0.5 * (1.0 - fw);  // (what follows the camera already keeps its place)
 }
 // the HUD and a few pixels around it (glows, outlines and their soft edges): the mask's texels cover
 // 4x4 TV pixels, its bilinear tap anything within one texel of them
@@ -145,6 +145,7 @@ layout(set=0,binding=4) uniform sampler2D flowImg;
 layout(push_constant) uniform P { vec4 r0; vec4 r1; vec4 r2; vec4 t; vec4 z; vec4 rect; vec4 a; } p;
 layout(location=0) out vec2 src;
 layout(location=1) out vec3 farSrc;  // src weighted by depth^4: a gap's triangle takes the far side
+layout(location=2) out vec4 dbg;     // WWHD_FRAMEGEN_DEBUG: the movement's kind
 float viewDepth(vec2 q) {
  vec4 m = textureGather(depthImg, q);
  float d = min(min(m.x, m.y), min(m.z, m.w)), n = p.z.x, f = p.z.y;
@@ -168,7 +169,7 @@ vec2 objectMove(vec2 q, float z, float fw) {
  if (f.w < 0.5) return vec2(0.0);
  float bz = p.z.x * exp(f.z * log(p.z.y / p.z.x));
  if (abs(z - bz) > 0.15 * bz) return vec2(0.0);
- return (f.xy - 0.5) * (0.5 / 8.0) * (1.0 - fw);
+ return f.xy * 0.5 * (1.0 - fw);
 }
 void main() {
  int cols = int(p.rect.x), rows = int(p.rect.y);
@@ -179,6 +180,8 @@ void main() {
  float z = viewDepth(qc), fw = follows(z, qc);
  vec2 d = mix(toGenCam(q, z), q, fw) + objectMove(qc, z, fw);
  src = qc;
+ vec4 fm = textureLod(flowImg, qc, 0.0);
+ dbg = vec4(fm.w > 0.75 ? 1.0 : 0.0, fm.w > 0.25 && fm.w < 0.75 ? 1.0 : 0.0, fm.w < 0.25 ? 1.0 : 0.0, length(fm.xy) > 0.002 ? 1.0 : 0.0);
  float w = pow(clamp(z, 1.0, 1e5) / 100.0, 4.0);
  farSrc = vec3(qc * w, w);
  gl_Position = vec4(d * 2.0 - 1.0, clamp(log(max(z, p.z.x) / p.z.x) / log(p.z.y / p.z.x), 0.0, 1.0) * 0.99, 1.0);
@@ -191,6 +194,7 @@ layout(set=0,binding=3) uniform sampler2D sceneImg;
 layout(push_constant) uniform P { vec4 r0; vec4 r1; vec4 r2; vec4 t; vec4 z; vec4 rect; vec4 a; } p;
 layout(location=0) in vec2 src;
 layout(location=1) in vec3 farSrc;
+layout(location=2) in vec4 dbg;
 layout(location=0) out vec4 result;
 vec3 enc(vec3 c) {
  return p.a.z > 0.5 ? mix(c * 12.92, 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c)) : c;
@@ -204,6 +208,9 @@ void main() {
  bool gap = area < 0.15;
  gl_FragDepth = gap ? 0.995 : gl_FragCoord.z;
  result = vec4(enc(textureLod(sceneImg, gap ? farSrc.xy / max(farSrc.z, 1e-30) : src, 0.0).rgb), 1.0);
+ // debug: red sure, green spread, blue undecided; bright where it moves on its own
+ if (p.rect.w > 1.5) result.rgb = vec3(gl_FragCoord.z / 0.99);  // debug 2: the depth (log scale)
+ else if (p.rect.w > 0.5) result.rgb = mix(result.rgb, dbg.rgb * (0.4 + 0.6 * dbg.w), 0.6);
 }
 )glsl";
 
@@ -275,7 +282,7 @@ vec2 objectMove(vec2 q, float z, float fw) {
  if (f.w < 0.5) return vec2(0.0);
  float bz = p.z.x * exp(f.z * log(p.z.y / p.z.x));
  if (abs(z - bz) > 0.15 * bz) return vec2(0.0);
- return (f.xy - 0.5) * (0.5 / 8.0) * (1.0 - fw);
+ return f.xy * 0.5 * (1.0 - fw);
 }
 vec4 window(vec2 q) {
  ivec2 sz = textureSize(comp, 0);
@@ -311,8 +318,9 @@ void main() {
 
 // Objects' own movement, one value per 16x16 block of the TV picture: the block of this frame's scene
 // (quarter size, no HUD) is looked for in the previous one around where the camera's movement alone
-// puts it (depth). Output: the movement beyond the camera's, previous -> this frame (uv * 8 + 0.5), the
-// block's nearest depth (log scale), valid. Blocks with little detail or no clearly better match: 0.
+// puts it (depth), and around the same place on the screen (what the camera follows). Output
+// (RGBA16F): the movement beyond the camera's, previous -> this frame (TV uv), the block's nearest
+// depth (log scale), valid. Blocks with little detail or no clearly better match: 0.
 // r0..r2: rows of D (this camera's axes in the previous camera's space), .w: this eye there
 const char* kFlow = R"glsl(#version 450
 layout(set=0,binding=0) uniform sampler2D curImg;
@@ -335,39 +343,51 @@ float sad(vec4 a[4], vec4 b[4]) {
  return d.x + d.y + d.z + d.w;
 }
 void main() {
- result = vec4(0.5, 0.5, 0.0, 0.0);
+ result = vec4(0.0);
  vec2 ts = 1.0 / vec2(textureSize(curImg, 0));
  vec4 cur[4]; block(curImg, uv, ts, cur);
  vec4 m4 = (cur[0] + cur[1] + cur[2] + cur[3]) * 0.25; float mean = (m4.x + m4.y + m4.z + m4.w) * 0.25;
  vec4 dv = abs(cur[0] - mean) + abs(cur[1] - mean) + abs(cur[2] - mean) + abs(cur[3] - mean);
- if (dv.x + dv.y + dv.z + dv.w < 0.25) return;  // little detail: no reliable match
  vec2 dt = 1.0 / vec2(textureSize(depthImg, 0));
  vec4 g = min(min(textureGather(depthImg, uv + vec2(-4.0, -4.0) * dt), textureGather(depthImg, uv + vec2(4.0, -4.0) * dt)),
               min(textureGather(depthImg, uv + vec2(-4.0, 4.0) * dt), textureGather(depthImg, uv + vec2(4.0, 4.0) * dt)));
  float z = lin(min(min(g.x, g.y), min(g.z, g.w)));
+ float zl = clamp(log(z / p.z.x) / log(p.z.y / p.z.x), 0.0, 1.0);
+ result.z = zl;
+ if (dv.x + dv.y + dv.z + dv.w < 0.12) return;  // little detail: no reliable match
+ // where the camera's movement alone puts this block in the previous picture (the world held still)
  vec3 P = vec3((uv.x * 2.0 - 1.0) * p.t.x, (1.0 - uv.y * 2.0) * p.t.y, -1.0) * z;
  vec3 q = vec3(dot(p.r0.xyz, P), dot(p.r1.xyz, P), dot(p.r2.xyz, P)) + vec3(p.r0.w, p.r1.w, p.r2.w);
- if (q.z > -1e-4) return;
- vec2 pp = vec2(q.x / (-q.z) / p.t.x * 0.5 + 0.5, 0.5 - q.y / (-q.z) / p.t.y * 0.5);
- if (any(lessThan(pp, vec2(0.02))) || any(greaterThan(pp, vec2(0.98)))) return;
- float best = 1e9, zero = 0.0; vec2 bo = vec2(0.0); vec4 b[4];
- for (int oy = -6; oy <= 6; oy += 2) for (int ox = -6; ox <= 6; ox += 2) {
-  vec2 o = vec2(ox, oy); block(prevImg, pp + o * ts, ts, b); float sd = sad(cur, b);
-  if (ox == 0 && oy == 0) zero = sd;
-  if (sd < best) { best = sd; bo = o; }
+ bool camOk = q.z < -1e-4;
+ vec2 pp = camOk ? vec2(q.x / (-q.z) / p.t.x * 0.5 + 0.5, 0.5 - q.y / (-q.z) / p.t.y * 0.5) : uv;
+ camOk = camOk && all(greaterThan(pp, vec2(0.01))) && all(lessThan(pp, vec2(0.99)));
+ // two places to look: around pp, and around the same place on the screen (something the camera
+ // follows: Link, the boat he sails, the title's boat), each +-6 quarter-size pixels, then refined
+ float best = 1e9, atCam = 1e9; vec2 bp = uv; vec4 b[4];
+ for (int h = 0; h < 2; h++) {
+  vec2 c = h == 0 ? pp : uv;
+  if (h == 0 && !camOk) continue;
+  for (int oy = -6; oy <= 6; oy += 2) for (int ox = -6; ox <= 6; ox += 2) {
+   vec2 at = c + vec2(ox, oy) * ts;
+   if (any(lessThan(at, vec2(0.01))) || any(greaterThan(at, vec2(0.99)))) continue;
+   block(prevImg, at, ts, b); float sd = sad(cur, b);
+   if (h == 0 && ox == 0 && oy == 0) atCam = sd;
+   if (sd < best) { best = sd; bp = at; }
+  }
  }
- vec2 c0 = bo;
+ vec2 c0 = bp;
  for (int oy = -1; oy <= 1; oy++) for (int ox = -1; ox <= 1; ox++) {
   if (ox == 0 && oy == 0) continue;
-  vec2 o = c0 + vec2(ox, oy); block(prevImg, pp + o * ts, ts, b); float sd = sad(cur, b);
-  if (sd < best) { best = sd; bo = o; }
+  vec2 at = c0 + vec2(ox, oy) * ts;
+  block(prevImg, at, ts, b); float sd = sad(cur, b);
+  if (sd < best) { best = sd; bp = at; }
  }
- if (zero <= best * 2.0 + 0.1 || best > 1.2) bo = vec2(0.0);  // the camera's movement explains it, or no clear match
- vec2 v = -bo * ts;
- result = vec4(clamp(v * 8.0 + 0.5, 0.0, 1.0), clamp(log(z / p.z.x) / log(p.z.y / p.z.x), 0.0, 1.0), bo == vec2(0.0) ? 0.0 : 1.0);
+ if (best > 1.2 || atCam <= best * 1.5 + 0.05) return;  // no clear match, or the camera's movement explains it
+ // the movement beyond the camera's, previous -> this frame (uv)
+ result = vec4(pp - bp, zl, 1.0);
 }
 )glsl";
-// a block keeps its movement only when at least 3 of its 8 neighbours moved the same way, and takes
+// a block keeps its movement only when at least 2 of its 8 neighbours moved the same way, and takes
 // their average; lone blocks (water, flicker) are dropped. t.x: the agreement distance in the encoding
 const char* kFilter = R"glsl(#version 450
 layout(set=0,binding=0) uniform sampler2D flowIn;
@@ -376,7 +396,7 @@ layout(location=0) out vec4 result;
 layout(push_constant) uniform P { vec4 r0; vec4 r1; vec4 r2; vec4 t; vec4 z; vec4 rect; } p;
 void main() {
  vec4 c = textureLod(flowIn, uv, 0.0);
- result = vec4(0.5, 0.5, c.z, 0.0);
+ result = vec4(0.0, 0.0, c.z, 0.0);
  if (c.w < 0.5) return;
  vec2 ts = 1.0 / vec2(textureSize(flowIn, 0));
  vec2 sum = c.xy; float n = 0.0;
@@ -385,7 +405,7 @@ void main() {
   vec4 o = textureLod(flowIn, uv + vec2(i, j) * ts, 0.0);
   if (o.w > 0.5 && all(lessThan(abs(o.xy - c.xy), vec2(p.t.x)))) { sum += o.xy; n += 1.0; }
  }
- if (n >= 3.0) result = vec4(sum / (n + 1.0), c.z, 1.0);
+ if (n >= 2.0) result = vec4(sum / (n + 1.0), c.z, 1.0);
 }
 )glsl";
 // where the HUD is (WWHD: the finished TV picture differs from the scene there), one texel per 4x4 TV
@@ -408,6 +428,103 @@ void main() {
 }
 )glsl";
 
+
+// The movement of each quarter-size pixel (4x4 TV pixels), chosen among three explanations of where
+// it was in the previous picture: the world held still (the camera's movement alone), held on the
+// screen (something the camera follows: Link, his boat, the title's boat), or its block's own
+// movement (kFlow). The block movement alone tore objects apart: a block's textured part went one
+// way and the rest of the same object the other (the title's dragon came out twice, trembling).
+// Each is tried with the 3x3 neighbourhood in colour; the one that fits clearly better wins. Output
+// (RGBA16F): the movement beyond the camera's, previous -> this frame (TV uv), log depth, 1 where
+// sure, 0 where nothing tells them apart (flat colour: kSpread fills it in).
+const char* kSelect = R"glsl(#version 450
+layout(set=0,binding=0) uniform sampler2D curImg;
+layout(set=0,binding=1) uniform sampler2D prevImg;
+layout(set=0,binding=2) uniform sampler2D depthImg;
+layout(set=0,binding=3) uniform sampler2D flowImg;
+layout(location=0) in vec2 uv;
+layout(location=0) out vec4 result;
+layout(push_constant) uniform P { vec4 r0; vec4 r1; vec4 r2; vec4 t; vec4 z; vec4 rect; vec4 a; } p;
+float lin(float d) {
+ float n = p.z.x, f = p.z.y;
+ return 2.0 * n * f / max((f + n) - (d * 2.0 - 1.0) * (f - n), 1e-6);
+}
+float err(vec2 at, vec2 from, vec2 ts) {
+ float e = 0.0;
+ for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+  vec2 o = vec2(i, j) * ts;
+  vec3 d = abs(textureLod(curImg, at + o, 0.0).rgb - textureLod(prevImg, from + o, 0.0).rgb);
+  e += d.r + d.g + d.b;
+ }
+ return e;
+}
+void main() {
+ vec2 ts = 1.0 / vec2(textureSize(curImg, 0));
+ vec4 g = textureGather(depthImg, uv);
+ float z = lin(min(min(g.x, g.y), min(g.z, g.w)));
+ float zl = clamp(log(z / p.z.x) / log(p.z.y / p.z.x), 0.0, 1.0);
+ result = vec4(0.0, 0.0, zl, 0.0);
+ vec3 P = vec3((uv.x * 2.0 - 1.0) * p.t.x, (1.0 - uv.y * 2.0) * p.t.y, -1.0) * z;
+ vec3 q = vec3(dot(p.r0.xyz, P), dot(p.r1.xyz, P), dot(p.r2.xyz, P)) + vec3(p.r0.w, p.r1.w, p.r2.w);
+ if (q.z > -1e-4) return;
+ vec2 pp = vec2(q.x / (-q.z) / p.t.x * 0.5 + 0.5, 0.5 - q.y / (-q.z) / p.t.y * 0.5);
+ bool inside = all(greaterThan(pp, ts)) && all(lessThan(pp, 1.0 - ts));
+ // detail: flat colour can't tell the explanations apart
+ vec3 m = vec3(0.0);
+ for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) m += textureLod(curImg, uv + vec2(i, j) * ts, 0.0).rgb;
+ m /= 9.0;
+ float detail = 0.0;
+ for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+  vec3 d = abs(textureLod(curImg, uv + vec2(i, j) * ts, 0.0).rgb - m);
+  detail += d.r + d.g + d.b;
+ }
+ float eCam = inside ? err(uv, pp, ts) : 1e9;
+ float eHold = err(uv, uv, ts);
+ vec4 f = textureLod(flowImg, uv, 0.0);
+ vec2 fromFlow = pp - f.xy;
+ float eFlow = f.w > 0.5 && all(greaterThan(fromFlow, ts)) && all(lessThan(fromFlow, 1.0 - ts)) ? err(uv, fromFlow, ts) : 1e9;
+ // the camera's explanation is the default: the others must fit clearly better
+ float best = eCam; vec2 res = vec2(0.0); float second = 1e9;
+ if (eHold < best * 0.8 - 0.02) { second = best; best = eHold; res = pp - uv; } else second = min(second, eHold);
+ if (eFlow < best * 0.8 - 0.02) { second = min(second, best); best = eFlow; res = f.xy; } else second = min(second, eFlow);
+ bool sure = detail > 0.15 && (second > best * 1.25 + 0.03);
+ result = vec4(sure ? res : vec2(0.0), zl, sure ? 1.0 : 0.0);
+}
+)glsl";
+
+// pixels without a sure movement take the one of sure neighbours at the same depth (5x5, every
+// t.x texels; t.y: the depth tolerance in the log encoding); found: 0.5
+const char* kSpread = R"glsl(#version 450
+layout(set=0,binding=0) uniform sampler2D selIn;
+layout(location=0) in vec2 uv;
+layout(location=0) out vec4 result;
+layout(push_constant) uniform P { vec4 r0; vec4 r1; vec4 r2; vec4 t; vec4 z; vec4 rect; vec4 a; } p;
+void main() {
+ vec4 c = textureLod(selIn, uv, 0.0);
+ result = c;
+ if (c.w > 0.25) return;
+ vec2 ts = p.t.x / vec2(textureSize(selIn, 0));
+ vec2 sum = vec2(0.0); float n = 0.0;
+ for (int j = -2; j <= 2; j++) for (int i = -2; i <= 2; i++) {
+  vec4 o = textureLod(selIn, uv + vec2(i, j) * ts, 0.0);
+  if (o.w > 0.25 && abs(o.z - c.z) < p.t.y) { sum += o.xy; n += 1.0; }
+ }
+ if (n > 0.0) result = vec4(sum / n, c.z, 0.5);
+}
+)glsl";
+
+// the depth of the frame's two 3D passes as one (the nearer of both)
+const char* kDepthMerge = R"glsl(#version 450
+layout(set=0,binding=0) uniform sampler2D curDepth;
+layout(set=0,binding=1) uniform sampler2D keptDepth;
+layout(location=0) in vec2 uv;
+layout(location=0) out vec4 result;
+void main() {
+ ivec2 c = ivec2(gl_FragCoord.xy);
+ result = vec4(min(texelFetch(curDepth, c, 0).r, texelFetch(keptDepth, c, 0).r), 0.0, 0.0, 1.0);
+}
+)glsl";
+
 // the scene at quarter size (a 4x4 average from 4 bilinear taps)
 const char* kQuarter = R"glsl(#version 450
 layout(set=0,binding=0) uniform sampler2D src;
@@ -423,6 +540,8 @@ void main() {
 // a small render target of the generation passes (RGBA8, GENERAL once drawn)
 struct Target {
     Image img;
+    bool f16 = false;  // RGBA16F (S.pass16): the objects' movement
+    bool r32 = false;  // R32F (S.pass32): the merged depth
     VkImageView view = VK_NULL_HANDLE;
     VkFramebuffer fb = VK_NULL_HANDLE;
 };
@@ -454,14 +573,21 @@ struct State {
     uint64_t sceneFrame = ~0ull;
     uint32_t depthAddr = 0, depthW = 0, depthH = 0;
     uint64_t depthFrame = ~0ull;
-    VkRenderPass pass = VK_NULL_HANDLE;
+    // the depth of an earlier 3D pass of the frame (keep_depth), and both merged (R32F, kDepthMerge)
+    Image depthKeep;
+    uint64_t keepFrame = ~0ull;
+    uint32_t keepAddr = 0;
+    Target depthMerged;
+    VkRenderPass pass32 = VK_NULL_HANDLE;
+    std::vector<std::pair<const char*, VkPipeline>> pipelines32;
+    VkRenderPass pass = VK_NULL_HANDLE, pass16 = VK_NULL_HANDLE;  // RGBA8 and RGBA16F targets
     VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;  // the warp
-    std::vector<std::pair<const char*, VkPipeline>> pipelines;  // the other passes, by shader
+    std::vector<std::pair<const char*, VkPipeline>> pipelines, pipelines16;  // the other passes, by shader
     VkSampler nearest = VK_NULL_HANDLE;
     // objects' movement: the scene at quarter size (this frame's and the one before), per-block movement
-    Target small[2], flowRaw, flow, hudMask;
+    Target small[2], flowRaw, flow, hudMask, sel[2];  // sel: the movement per quarter-size pixel (kSelect)
     uint64_t smallFrame[2] = {~0ull, ~0ull};
     int smallCur = 0;
     uint64_t generated = 0, skipped = 0, withCoverage = 0;
@@ -511,7 +637,7 @@ VkShaderModule module(const char* src, bool vertex) {
     return m;
 }
 
-VkPipeline create_pipeline(const char* src);
+VkPipeline create_pipeline(const char* src, VkRenderPass pass = VK_NULL_HANDLE);
 VkPipeline pipeline_for(const char* src);
 bool make_pipeline() {
     if (S.pipeline) return true;
@@ -545,6 +671,10 @@ bool make_pipeline() {
     rp.dependencyCount = 2;
     rp.pDependencies = deps;
     VK_CHECK(vkCreateRenderPass(R.device, &rp, nullptr, &S.pass));
+    a.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    VK_CHECK(vkCreateRenderPass(R.device, &rp, nullptr, &S.pass16));
+    a.format = VK_FORMAT_R32_SFLOAT;
+    VK_CHECK(vkCreateRenderPass(R.device, &rp, nullptr, &S.pass32));
 
     VkDescriptorSetLayoutBinding b[5];
     for (uint32_t i = 0; i < 5; i++) b[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -571,7 +701,7 @@ bool make_pipeline() {
 }
 
 // a full-screen pass's pipeline (the shared render pass and layout) for fragment shader `src`
-VkPipeline create_pipeline(const char* src) {
+VkPipeline create_pipeline(const char* src, VkRenderPass pass) {
     VkShaderModule vs = module(kVertex, true), fs = module(src, false);
     if (!vs || !fs) return VK_NULL_HANDLE;
     VkPipelineShaderStageCreateInfo stages[2]{};
@@ -612,7 +742,7 @@ VkPipeline create_pipeline(const char* src) {
     ci.pColorBlendState = &bs;
     ci.pDynamicState = &ds;
     ci.layout = S.layout;
-    ci.renderPass = S.pass;
+    ci.renderPass = pass ? pass : S.pass;
     VkPipeline pipe = VK_NULL_HANDLE;
     VK_CHECK(create_graphics_pipeline(&ci, &pipe));
     vkDestroyShaderModule(R.device, vs, nullptr);
@@ -625,6 +755,24 @@ VkPipeline pipeline_for(const char* src) {
         if (k == src) return v;
     VkPipeline pl = create_pipeline(src);
     if (pl) S.pipelines.push_back({src, pl});
+    return pl;
+}
+
+// the same for a pass drawn into an R32F target
+VkPipeline pipeline32_for(const char* src) {
+    for (auto& [k, v] : S.pipelines32)
+        if (k == src) return v;
+    VkPipeline pl = create_pipeline(src, S.pass32);
+    if (pl) S.pipelines32.push_back({src, pl});
+    return pl;
+}
+
+// the same for a pass drawn into an RGBA16F target
+VkPipeline pipeline16_for(const char* src) {
+    for (auto& [k, v] : S.pipelines16)
+        if (k == src) return v;
+    VkPipeline pl = create_pipeline(src, S.pass16);
+    if (pl) S.pipelines16.push_back({src, pl});
     return pl;
 }
 
@@ -664,19 +812,22 @@ void release_target(Target& t) {
 
 // a small RGBA8 target of w x h (recreated when the size changes; the GPU may still read the old one:
 // it is released once the frame is done)
-bool ensure_target(Target& t, uint32_t w, uint32_t h) {
-    if (t.img.image && t.img.width == w && t.img.height == h) return true;
+bool ensure_target(Target& t, uint32_t w, uint32_t h, bool f16 = false, bool r32 = false) {
+    if (t.img.image && t.img.width == w && t.img.height == h && t.f16 == f16 && t.r32 == r32) return true;
     if (t.img.image) {
         Target old = t;
         on_complete([old]() mutable { release_target(old); });
         t = Target{};
     }
-    if (!create_image(t.img, VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, w, h, 1, 1, 1,
-                      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, false, false, false))
+    if (!create_image(t.img, VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D,
+                      r32 ? VK_FORMAT_R32_SFLOAT : f16 ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM,
+                      w, h, 1, 1, 1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, false, false, false))
         return false;
+    t.f16 = f16;
+    t.r32 = r32;
     t.view = make_view(t.img, VK_IMAGE_VIEW_TYPE_2D, 0, 1, {}, VK_IMAGE_ASPECT_COLOR_BIT);
     VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-    fi.renderPass = S.pass;
+    fi.renderPass = r32 ? S.pass32 : f16 ? S.pass16 : S.pass;
     fi.attachmentCount = 1;
     fi.pAttachments = &t.view;
     fi.width = w;
@@ -692,7 +843,8 @@ struct Input {
     VkImageLayout layout;
 };
 // one full-screen pass of `pipe` into framebuffer `fb` (w x h); up to 5 sampled inputs
-void run_pass(VkCommandBuffer cmd, VkPipeline pipe, VkFramebuffer fb, uint32_t w, uint32_t h, const Input* in, int n, const Push& pc) {
+void run_pass(VkCommandBuffer cmd, VkPipeline pipe, VkFramebuffer fb, uint32_t w, uint32_t h, const Input* in, int n, const Push& pc,
+              VkRenderPass pass = VK_NULL_HANDLE) {
     VkDescriptorSet set = alloc_descriptor_set(S.dsl);
     VkDescriptorImageInfo ii[5];
     VkWriteDescriptorSet wr[5]{};
@@ -708,7 +860,7 @@ void run_pass(VkCommandBuffer cmd, VkPipeline pipe, VkFramebuffer fb, uint32_t w
     }
     vkUpdateDescriptorSets(R.device, 5, wr, 0, nullptr);
     VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-    bi.renderPass = S.pass;
+    bi.renderPass = pass ? pass : S.pass;
     bi.framebuffer = fb;
     bi.renderArea = {{0, 0}, {w, h}};
     vkCmdBeginRenderPass(cmd, &bi, VK_SUBPASS_CONTENTS_INLINE);
@@ -962,6 +1114,33 @@ void run_grid(VkCommandBuffer cmd, const Input* in, const Push& pc) {
     vkCmdEndRenderPass(cmd);
 }
 
+void keep_depth_impl(Surface* s) {
+    if (!S.enabled || !s || !s->isDepth || !s->img.image || S.sceneFrame == R.frame) return;
+    Image& src = s->img;
+    if (S.depthKeep.image && (S.depthKeep.width != src.width || S.depthKeep.height != src.height || S.depthKeep.format != src.format)) {
+        retire_image(S.depthKeep);
+        S.depthKeep = Image{};
+    }
+    if (!S.depthKeep.image &&
+        !create_image(S.depthKeep, VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D, src.format, src.width, src.height, 1, 1, 1,
+                      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, false, true, false)) {
+        S.depthKeep = Image{};
+        return;
+    }
+    prepare(src, Use::COPY_SRC);
+    prepare(S.depthKeep, Use::COPY_DST);
+    VkImageCopy r{};
+    r.srcSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+    r.dstSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+    r.extent = {src.width, src.height, 1};
+    vkCmdCopyImage(command_buffer(), src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, S.depthKeep.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   1, &r);
+    S.keepFrame = R.frame;
+    S.keepAddr = s->addr;
+    static int logged = 0;
+    if (logged++ < 3) LOG("[framegen] a second 3D pass in the frame: the first one's depth kept (%08X %ux%u)", s->addr, src.width, src.height);
+}
+
 // the scene's depth buffer of this frame (the TV picture's size), or null
 Surface* scene_depth() {
     if (S.depthFrame != S.sceneFrame || !S.depthAddr) return nullptr;
@@ -974,6 +1153,8 @@ Surface* scene_depth() {
 }
 }  // namespace
 
+void keep_depth(Surface* s) { keep_depth_impl(s); }
+
 bool enabled() { return S.enabled; }
 void set_enabled(bool on) {
     S.enabled = on;
@@ -984,6 +1165,9 @@ void set_enabled(bool on) {
 void note_camera(const float eye[3], const float center[3], const float up[3], float fovy, float znear, float zfar) {
     if (!S.enabled) return;
     std::lock_guard<std::mutex> lk(S.mu);
+    if (getenv("WWHD_CAM_LOG"))
+        LOG("[framegen] cam frame %llu eye %.1f %.1f %.1f center %.1f %.1f %.1f fovy %.2f near %.2f far %.0f", (unsigned long long)R.frame,
+            eye[0], eye[1], eye[2], center[0], center[1], center[2], fovy, znear, zfar);
     if (S.cur.frame != R.frame) S.prev = S.cur;  // the frame's last camera counts (others: 2D, menus)
     basis(eye, center, up, S.cur.m);
     std::memcpy(S.cur.eye, eye, sizeof S.cur.eye);
@@ -1193,21 +1377,39 @@ std::vector<const Image*> record(VkCommandBuffer cmd, const Image& comp, VkImage
         vkDestroyImageView(R.device, scanView, nullptr);
         vkDestroyImageView(R.device, sceneView, nullptr);
     });
+    // a second 3D pass cleared the depth (the title's boat over Outset): both passes' depth merged
+    VkImageLayout depthLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    if (S.keepFrame == S.sceneFrame && S.keepAddr == depth->addr && S.depthKeep.image && S.depthKeep.width == depth->img.width &&
+        S.depthKeep.height == depth->img.height) {
+        VkPipeline mergePipe = pipeline32_for(kDepthMerge);
+        if (mergePipe && ensure_target(S.depthMerged, depth->img.width, depth->img.height, false, true)) {
+            prepare(S.depthKeep, Use::SAMPLED);
+            VkImageView keepView = make_view(S.depthKeep, VK_IMAGE_VIEW_TYPE_2D, 0, 1, {}, VK_IMAGE_ASPECT_DEPTH_BIT);
+            on_complete([keepView] { vkDestroyImageView(R.device, keepView, nullptr); });
+            Push none{};
+            Input min_[2] = {{depthView, S.nearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                             {keepView, S.nearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+            run_pass(cmd, mergePipe, S.depthMerged.fb, depth->img.width, depth->img.height, min_, 2, none, S.pass32);
+            depthView = S.depthMerged.view;
+            depthLayout = VK_IMAGE_LAYOUT_GENERAL;
+        }
+    }
     // objects' own movement (WWHD_FRAMEGEN_OBJECTS=0: off): this frame's scene at quarter size, searched
     // in the previous frame's per 16x16 block, then filtered
     static const bool objects = !getenv("WWHD_FRAMEGEN_OBJECTS") || atoi(getenv("WWHD_FRAMEGEN_OBJECTS")) != 0;
     bool flow = false;
+    VkImageView motionView = VK_NULL_HANDLE;  // the movement the generation passes read (binding 4)
     VkPipeline quarterPipe = objects ? pipeline_for(kQuarter) : VK_NULL_HANDLE;
-    VkPipeline flowPipe = objects ? pipeline_for(kFlow) : VK_NULL_HANDLE;
-    VkPipeline filterPipe = objects ? pipeline_for(kFilter) : VK_NULL_HANDLE;
+    VkPipeline flowPipe = objects ? pipeline16_for(kFlow) : VK_NULL_HANDLE;
+    VkPipeline filterPipe = objects ? pipeline16_for(kFilter) : VK_NULL_HANDLE;
     if (quarterPipe && flowPipe && filterPipe) {
         const uint32_t tw = S.scene.width, th = S.scene.height;
         const uint32_t sw = std::max(1u, tw / 4), sh = std::max(1u, th / 4);
         S.smallCur ^= 1;
         Target& cur = S.small[S.smallCur];
         Target& prev = S.small[S.smallCur ^ 1];
-        if (ensure_target(cur, sw, sh) && ensure_target(S.flowRaw, (tw + 15) / 16, (th + 15) / 16) &&
-            ensure_target(S.flow, (tw + 15) / 16, (th + 15) / 16)) {
+        if (ensure_target(cur, sw, sh) && ensure_target(S.flowRaw, (tw + 15) / 16, (th + 15) / 16, true) &&
+            ensure_target(S.flow, (tw + 15) / 16, (th + 15) / 16, true)) {
             Push none{};
             Input qin[1] = {{sceneView, R.linearClamp, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
             run_pass(cmd, quarterPipe, cur.fb, sw, sh, qin, 1, none);
@@ -1218,16 +1420,36 @@ std::vector<const Image*> record(VkCommandBuffer cmd, const Image& comp, VkImage
                         {tanX, tanY, 0, 0}, {znear, zfar, 1, 0}, {}};
                 Input fin[3] = {{cur.view, S.nearest, VK_IMAGE_LAYOUT_GENERAL},
                                 {prev.view, S.nearest, VK_IMAGE_LAYOUT_GENERAL},
-                                {depthView, S.nearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
-                run_pass(cmd, flowPipe, S.flowRaw.fb, S.flowRaw.img.width, S.flowRaw.img.height, fin, 3, fp);
-                Push ff{{}, {}, {}, {1.2f * 8.0f / (float)sw, 0, 0, 0}, {}, {}};  // ~1 quarter-size pixel in the encoding
+                                {depthView, S.nearest, depthLayout}};
+                run_pass(cmd, flowPipe, S.flowRaw.fb, S.flowRaw.img.width, S.flowRaw.img.height, fin, 3, fp, S.pass16);
+                Push ff{{}, {}, {}, {1.2f / (float)sw, 0, 0, 0}, {}, {}};  // ~1 quarter-size pixel
                 Input gin[1] = {{S.flowRaw.view, S.nearest, VK_IMAGE_LAYOUT_GENERAL}};
-                run_pass(cmd, filterPipe, S.flow.fb, S.flow.img.width, S.flow.img.height, gin, 1, ff);
+                run_pass(cmd, filterPipe, S.flow.fb, S.flow.img.width, S.flow.img.height, gin, 1, ff, S.pass16);
                 flow = true;
+                // the movement per quarter-size pixel (WWHD_FRAMEGEN_SELECT=0: the blocks' as they are)
+                static const bool selectOn = !getenv("WWHD_FRAMEGEN_SELECT") || atoi(getenv("WWHD_FRAMEGEN_SELECT")) != 0;
+                VkPipeline selPipe = selectOn ? pipeline16_for(kSelect) : VK_NULL_HANDLE;
+                VkPipeline spreadPipe = selectOn ? pipeline16_for(kSpread) : VK_NULL_HANDLE;
+                if (selPipe && spreadPipe && ensure_target(S.sel[0], sw, sh, true) && ensure_target(S.sel[1], sw, sh, true)) {
+                    Input sin_[4] = {{cur.view, S.nearest, VK_IMAGE_LAYOUT_GENERAL},
+                                     {prev.view, R.linearClamp, VK_IMAGE_LAYOUT_GENERAL},
+                                     {depthView, S.nearest, depthLayout},
+                                     {S.flow.view, S.nearest, VK_IMAGE_LAYOUT_GENERAL}};
+                    run_pass(cmd, selPipe, S.sel[0].fb, sw, sh, sin_, 4, fp, S.pass16);
+                    // spread twice (every 2, then every 4 quarter-size pixels); depth within ~8%
+                    const float tol = (float)(0.08 / std::log(zfar / znear));
+                    for (int k = 0; k < 2; k++) {
+                        Push sp{{}, {}, {}, {k ? 4.0f : 2.0f, tol, 0, 0}, {}, {}, {}};
+                        Input spin[1] = {{S.sel[k].view, S.nearest, VK_IMAGE_LAYOUT_GENERAL}};
+                        run_pass(cmd, spreadPipe, S.sel[k ^ 1].fb, sw, sh, spin, 1, sp, S.pass16);
+                    }
+                    motionView = S.sel[0].view;
+                }
             }
         }
     }
     pc.z[3] = flow ? 1.0f : 0.0f;
+    if (flow && !motionView) motionView = S.flow.view;
     if (!S.genFb[i]) {
         VkFramebufferCreateInfo fi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
         fi.renderPass = S.pass;
@@ -1266,13 +1488,14 @@ std::vector<const Image*> record(VkCommandBuffer cmd, const Image& comp, VkImage
             gp.rect[0] = (float)cols;
             gp.rect[1] = (float)rows;
             gp.rect[2] = margin;
-            gp.rect[3] = 0;
+            static const bool dbgOn = getenv("WWHD_FRAMEGEN_DEBUG") != nullptr;
+            gp.rect[3] = dbgOn ? (float)atof(getenv("WWHD_FRAMEGEN_DEBUG")) : 0.0f;
             gp.a[2] = R.tv.srgb ? 1.0f : 0.0f;
             Input gin[5] = {{sceneView, S.nearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-                            {depthView, S.nearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                            {depthView, S.nearest, depthLayout},
                             {sceneView, S.nearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
                             {sceneView, R.linearClamp, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-                            {flow ? S.flow.view : sceneView, flow ? R.linearClamp : S.nearest,
+                            {flow ? motionView : sceneView, S.nearest,
                              flow ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
             run_grid(cmd, gin, gp);
             Push cp = pc;
@@ -1298,10 +1521,10 @@ std::vector<const Image*> record(VkCommandBuffer cmd, const Image& comp, VkImage
             on_complete([covView] { vkDestroyImageView(R.device, covView, nullptr); });
             pc.a[2] = R.tv.srgb ? 1.0f : 0.0f;
             Input cin[5] = {{compView, S.nearest, VK_IMAGE_LAYOUT_GENERAL},
-                            {depthView, S.nearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                            {depthView, S.nearest, depthLayout},
                             {covView, R.linearClamp, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
                             {sceneView, S.nearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-                            {flow ? S.flow.view : sceneView, flow ? R.linearClamp : S.nearest,
+                            {flow ? motionView : sceneView, S.nearest,
                              flow ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
             run_pass(cmd, covPipe, S.genFb[i], S.w, S.h, cin, 5, pc);
             S.generated++;
@@ -1324,10 +1547,10 @@ std::vector<const Image*> record(VkCommandBuffer cmd, const Image& comp, VkImage
         run_pass(cmd, maskPipe, S.hudMask.fb, mw, mh, min_, 2, pc);
     }
     Input win[5] = {{compView, S.nearest, VK_IMAGE_LAYOUT_GENERAL},
-                    {depthView, S.nearest, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                    {depthView, S.nearest, depthLayout},
                     {S.hudMask.view, R.linearClamp, VK_IMAGE_LAYOUT_GENERAL},
                     {S.hudMask.view, R.linearClamp, VK_IMAGE_LAYOUT_GENERAL},
-                    {flow ? S.flow.view : sceneView, flow ? R.linearClamp : S.nearest,
+                    {flow ? motionView : sceneView, S.nearest,
                      flow ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
     run_pass(cmd, S.pipeline, S.genFb[i], S.w, S.h, win, 5, pc);
     S.generated++;
@@ -1341,7 +1564,11 @@ void destroy() {
     if (S.gridIndex) vmaDestroyBuffer(R.vma, S.gridIndex, S.gridIndexAlloc);
     S.gridIndex = VK_NULL_HANDLE;
     S.gridCols = S.gridRows = 0;
-    for (Target* t : {&S.small[0], &S.small[1], &S.flowRaw, &S.flow, &S.hudMask}) release_target(*t);
+    for (Target* t : {&S.small[0], &S.small[1], &S.flowRaw, &S.flow, &S.hudMask, &S.sel[0], &S.sel[1], &S.depthMerged}) release_target(*t);
+    if (S.depthKeep.image) {
+        retire_image(S.depthKeep);
+        S.depthKeep = Image{};
+    }
     S.smallFrame[0] = S.smallFrame[1] = ~0ull;
     if (S.scene.image) {
         retire_image(S.scene);

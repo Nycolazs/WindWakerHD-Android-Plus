@@ -8,6 +8,8 @@
 // room: from the ship's position on the 7x7 grid of sea rooms (100000 units each, room 1 at the
 // north-west corner) where the stored one isn't valid.
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 #include "../release.h"
 #include "../runtime.h"
@@ -26,6 +28,7 @@ uint8_t sea_room(double x, double z) {
 // entering: r31 = the room about to be stored, r30 = the ship (actor position at +0x314)
 void entering(Cpu* c) {
     const int8_t room = (int8_t)c->r[31];
+    LOG("[ship] entering a ship of sea room %d (ship at %.0f %.0f)", (int)room, ldf32(c->r[30] + 0x314), ldf32(c->r[30] + 0x31C));
     if (room >= 0 && room < 64) return;
     const uint8_t r = sea_room(ldf32(c->r[30] + 0x314), ldf32(c->r[30] + 0x31C));
     LOG("[ship] entering a ship from sea room %d: the room from its position, %d", (int)room, (int)r);
@@ -37,8 +40,20 @@ extern "C" void site_025C3964(Cpu* c) { entering(c); }  // stb r31, 0x5D16(r3): 
 extern "C" void site_025C39F0(Cpu* c) { entering(c); }  // the same: Abship
 
 // leaving (type 61): r3 = game info, about to read the stored room
+// test aid: WWHD_TEST_SHIP=room:id stands for the ship entered from the sea (a shop reached by
+// WWHD_TEST_WARP has none): the way out goes to that ship in that sea room
 extern "C" void site_025C3A64(Cpu* c) {
     const uint32_t g = c->r[3];
+    if (const char* e = getenv("WWHD_TEST_SHIP")) {
+        static bool once = false;
+        int room = 0, id = 0;
+        if (!once && sscanf(e, "%d:%d", &room, &id) == 2) {
+            once = true;
+            LOG("[ship] test: leaving to the ship %d of sea room %d (stored: %d, %d)", id, room, (int)(int8_t)ld8(g + 0x5D16), (int)ld8(g + 0x5D17));
+            st8(g + 0x5D16, (uint8_t)room);
+            st8(g + 0x5D17, (uint8_t)id);
+        }
+    }
     const uint8_t room = ld8(g + 0x5D16);
     if (room < 64) return;
     const uint8_t r = sea_room(ldf32(g + 0x5D18), ldf32(g + 0x5D20));

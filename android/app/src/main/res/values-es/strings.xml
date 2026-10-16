@@ -520,5 +520,4 @@
         <item>Calidad</item>
         <item>Ligeros</item>
     </string-array>
-    <string name="pro_touch_hint">Para tocar los menús, cambia los controles a %1$s (Opciones)</string>
 </resources>

@@ -539,11 +539,20 @@ static void calc_mtx(Cpu* c) {
             if (ty >= 200.0f) ny = ty + halfY;
         }
     }
-    // a leaf covering the whole screen (background, fade): stretch it to the new shape
+    // a leaf covering the whole screen (background, fade): made to cover the new shape. One of the
+    // screen's shape is stretched to it; another shape (the telescope's and the first-person items'
+    // round view, W_Wipe_00: 1716x1716) keeps its proportions, scaled evenly just enough to cover
+    // (it usually covers the wider screen already): stretched, the round view became an ellipse
     uint32_t sentinel = pane + kPaneChildren;
     if (ld32(sentinel) == sentinel && std::fabs(tx) < 8.0f && std::fabs(ty) < 8.0f) {
         float w = (float)ldf32(pane + kPaneSize) * std::fabs(sx), h = (float)ldf32(pane + kPaneSize + 4) * std::fabs(sy);
-        if (w >= 1270.0f && h >= 710.0f) {
+        const bool screenShaped = h > 0.0f && std::fabs(w / h / (16.0f / 9.0f) - 1.0f) < 0.05f;
+        const float needX = 1280.0f * kx / std::max(w, 1.0f), needY = 720.0f * ky / std::max(h, 1.0f);
+        if (w >= 1270.0f && h >= 710.0f && !screenShaped) {
+            const float k = std::max(1.0f, std::max(needX, needY));
+            nsx = sx * k;
+            nsy = sy * k;
+        } else if (w >= 1270.0f && h >= 710.0f) {
             nsx = sx * kx;
             nsy = sy * ky;
             static const bool log_st = getenv("WWHD_ASPECT_LOG") != nullptr;

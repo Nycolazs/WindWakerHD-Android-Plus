@@ -2260,6 +2260,17 @@ void clear_depth_stencil(const uint32_t* regs, uint32_t db, float depth, uint32_
     if (log_this_frame() && s)
         LOG("[clear] depth %08X %ux%ux%u fmt %X vk %d -> depth %.4f stencil %u flags %u slices %u+%u", s->addr, s->width, s->height,
             s->slices, s->format, (int)s->fmt.format, depth, stencil, flags, first, num);
+#ifdef __ANDROID__
+    // the main depth buffer cleared a second time in a frame after being drawn into (the title draws
+    // Outset, then the boat over a cleared depth): the in-between frame keeps the first pass's depth
+    if ((flags & 1) && s && s->addr == R.mainDepthAddr && rp::enabled()) {
+        static uint64_t lastFrame = ~0ull;
+        static uint32_t lastAddr = 0;
+        if (lastFrame == R.frame && lastAddr == s->addr && !s->img.pendingClearLayers) rp::keep_depth(s);
+        lastFrame = R.frame;
+        lastAddr = s->addr;
+    }
+#endif
     clear_surface(s, nullptr, flags & 1, depth, (flags & 2) != 0, stencil, first, num);
 }
 
