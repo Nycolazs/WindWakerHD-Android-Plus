@@ -54,7 +54,35 @@ Get the latest APK from the **[Releases page](../../releases/latest)**.
 
 ## What's new in Plus
 
-### 🆕 New in v1.9: no more closing between areas, shaders ready before you play, a cooler phone
+### 🆕 New in v1.10: smooth area changes, no black flashes, save states that don't close the game, a cool phone in your pocket
+- **Much smoother when going from one area to another**: entering an area translated hundreds of
+  shaders again for 2-4 frames (100-230 ms stutters), even in an area visited minutes before, and
+  each time the result was the same. The shader key took in register state the translation never
+  reads (an earlier shader's leftover vertex semantics, export IDs and pixel inputs, the blend and
+  write-mask bits of the colour targets). On a Galaxy S20 FE, eight area changes twice over:
+  15,737 → 4,962 shaders, **none** translated when coming back to an area (~1,500 before), worst
+  frame entering an area 226 → ~120 ms, coming back ≤ 77 ms. Less memory as well.
+- **No more black or flashing 3D picture**: a few pixels whose colour came out as NaN (the Wii U's
+  GPU gives 0 for 0 × infinity, this one doesn't) were spread by the bloom and blur over the whole
+  screen: the 3D picture went black for some frames while the HUD stayed (seen in a night storm at
+  sea, 10% of the frames). Every pixel colour is kept finite now. The first start after updating
+  compiles the shaders again (once).
+- **The game pauses when you lock the phone or switch apps**: before, it kept playing unseen
+  (enemies and timers going on), drawing for no window and mixing sound nobody heard, a whole CPU
+  core busy with the screen off. Now it waits where it is: **CPU in the background 100% → 4%**,
+  much less battery and heat, and it continues exactly where you left it, without glitches.
+- **Save states no longer close the game a few seconds after saving**: saving held the whole state
+  (~235 MB) in memory until it was written, and loading read the whole file into memory, so Android
+  closed the game for low memory on 6 GB phones (and a state could seem impossible to load). Now
+  the state is written as it is compressed and the file is read in place: ~45 MB extra instead of
+  ~235 MB. Saving holds the game for about a second.
+- **Hybrid layout: the GamePad comes up for the Wind Waker's songs** (#14), as it does for the
+  pause menu (thanks [jaimepa17](https://github.com/jaimepa17) for the detailed report).
+- **Rotation**: the app changes Android's rotation settings only where the system ignores the
+  game's landscape. A lock screen or another app that turns the screen no longer fights with the
+  game.
+
+### 🧊 New in v1.9: no more closing between areas, shaders ready before you play, a cooler phone
 - **No more "crashes" when going from one area to another**: the game's GPU memory grew with every
   area visited (textures were never freed) until Android closed the game for low memory, without
   a crash log. Textures the game no longer uses are freed now, and upload memory is given back:
@@ -353,7 +381,7 @@ after a while and lower their clocks: playing while charging makes that worse.
 | The app closes at the title screen or while playing | It turns on **GPU safe mode** by itself on the next start. If it keeps closing, set **Graphics → GPU safe mode → Maximum**. |
 | A custom GPU driver crashes | The app goes back to the system driver on the next start and names the driver. Choosing it again gives it a new try. After a GPU hang it offers another driver before the game starts. |
 | The phone restarts with a Turnip driver | Update to v1.7: Turnip on Adreno 6xx above 1x resolution restarted the phone, the app now prevents it. |
-| The game shows in a portrait strip | Allow **"Modify system settings"** when the app asks (or in Android's settings for the app): it keeps the screen in landscape while you play. |
+| The game shows in a portrait strip | Some ROMs turn on "fixed to user rotation", which makes Android ignore every app's orientation. With a computer: `adb shell wm fixed-to-user-rotation default` (some ROMs turn it on again at every boot). Or allow **"Modify system settings"** when the app asks (or in Android's settings for the app): it then keeps the screen in landscape while you play. |
 | "The game closed unexpectedly" | The app saves a crash log. Tap **Share crash log** and attach it to an [issue](../../issues). |
 | Stutter the first time you visit a place | Shaders are being compiled; it is smooth from then on. |
 | Small artifacts at the screen edges or around moving things in 60 fps (generated) | Those are the generated frames. Choose **60 fps** if your phone is fast enough, or **30 fps**. |
@@ -374,7 +402,7 @@ ANDROID_NDK=$HOME/Android/Sdk/ndk/27.2.12479018 tools/android/build-llvm.sh
 
 cd android
 echo "sdk.dir=$HOME/Android/Sdk" > local.properties
-./gradlew assembleRelease -PwwhdDeviceRecomp -PwwhdVersionCode=15 -PwwhdVersionName=1.9
+./gradlew assembleRelease -PwwhdDeviceRecomp -PwwhdVersionCode=16 -PwwhdVersionName=1.10
 ```
 
 The APK is in `android/app/build/outputs/apk/release/`. Sign APKs you share with your own key
