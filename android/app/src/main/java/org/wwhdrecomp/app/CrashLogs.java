@@ -232,7 +232,7 @@ final class CrashLogs {
         ArrayList<Uri> uris = new ArrayList<>();
         ArrayList<String> names = new ArrayList<>();
         for (File f : logs) {
-            uris.add(CrashLogProvider.uri(f));
+            uris.add(CrashLogProvider.uri(a, f));
             names.add(f.getName());
         }
         Intent send = new Intent(uris.size() == 1 ? Intent.ACTION_SEND : Intent.ACTION_SEND_MULTIPLE);

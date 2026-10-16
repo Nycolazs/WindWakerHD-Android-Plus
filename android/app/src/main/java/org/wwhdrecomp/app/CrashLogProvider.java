@@ -13,13 +13,14 @@ import java.io.FileNotFoundException;
 
 /**
  * Hands the crash logs (CrashLogs) to the app the user shares them with: read only, one file per
- * content://org.wwhdrecomp.app.crashlogs/crash-YYYYmmdd-HHMMSS.log. Not exported; the share
+ * content://<application id>.crashlogs/crash-YYYYmmdd-HHMMSS.log. Not exported; the share
  * intent grants the receiving app access to the URIs it carries.
  */
 public final class CrashLogProvider extends ContentProvider {
-    static final String AUTHORITY = "org.wwhdrecomp.app.crashlogs";
-
-    static Uri uri(File log) { return new Uri.Builder().scheme("content").authority(AUTHORITY).appendPath(log.getName()).build(); }
+    // the application id's (a test build installed beside the app has its own)
+    static Uri uri(android.content.Context c, File log) {
+        return new Uri.Builder().scheme("content").authority(c.getPackageName() + ".crashlogs").appendPath(log.getName()).build();
+    }
 
     private File file(Uri u) throws FileNotFoundException {
         String name = u.getLastPathSegment();
