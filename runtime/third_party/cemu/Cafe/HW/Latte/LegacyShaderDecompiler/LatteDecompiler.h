@@ -261,6 +261,11 @@ struct LatteDecompilerOptions
 	bool usesGeometryShader{ false };
 	// floating point math
 	bool strictMul{}; // if true, 0*anything=0 rule is emulated
+	// WWHD: pixel colour outputs never carry NaN (written as 0) or infinity (+-65000). A
+	// constant operand is multiplied the IEEE way even with strictMul, so 0 * inf gives NaN where
+	// the console gives 0 (the thunderstorm's flash light: a black 3D picture for a few frames, as
+	// the bloom and blur passes spread a few NaN pixels over the whole screen)
+	bool finiteColorOutputs{ false };
 	// Vulkan-specific
 	bool useTFViaSSBO{ false };
 	struct

@@ -405,7 +405,7 @@ static void report_compile_error(const std::string& src, uint64_t key, const std
     }
 }
 
-// ---- SPIR-V cache on disk (spirv2.bin next to shaders.bin): translations seen in earlier sessions
+// ---- SPIR-V cache on disk (spirv3.bin next to shaders.bin): translations seen in earlier sessions
 // skip glslang. Records: uint64 source hash, uint32 word count, words. The file only grows: when
 // every translation changes (strictMul), a new name starts it over and the old file is deleted.
 // Only where each module is kept in memory (the file reached 68 MB, all of it was in RAM): a
@@ -418,8 +418,9 @@ static FILE* g_spv_in = nullptr;
 static size_t g_spv_disk_hits;
 
 static void spirv_cache_open(const std::string& dir) {
-    remove((dir + "/spirv.bin").c_str());  // translations before strictMul
-    std::string path = dir + "/spirv2.bin";
+    remove((dir + "/spirv.bin").c_str());   // translations before strictMul
+    remove((dir + "/spirv2.bin").c_str());  // ... before the finite pixel colours (finiteColorOutputs)
+    std::string path = dir + "/spirv3.bin";
     long end = 0;
     if (FILE* f = fopen(path.c_str(), "rb")) {
         uint64_t h;
@@ -1022,6 +1023,10 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
     // Rito mail sorting game); Cemu's default too (original project 0dfd3c3). WWHD_STRICT_MUL=0: off
     static const bool strictMul = !getenv("WWHD_STRICT_MUL") || strcmp(getenv("WWHD_STRICT_MUL"), "0");
     opt.strictMul = strictMul;
+    // pixel colours without NaN / infinity (LatteDecompiler.h): the thunderstorm's flash blacked out the
+    // 3D picture for a few frames. WWHD_NAN_GUARD=0: as the shader computes them
+    static const bool nanGuard = !getenv("WWHD_NAN_GUARD") || strcmp(getenv("WWHD_NAN_GUARD"), "0");
+    opt.finiteColorOutputs = nanGuard;
     if (!vertex && link.linked) {
         opt.linkPSInputsToVS = true;
         opt.vsOutputSemantics = link.exports;
