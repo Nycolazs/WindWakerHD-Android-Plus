@@ -26,6 +26,7 @@ final class RotationGuard {
     private final SharedPreferences prefs;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean resumed, applied;
+    private static boolean checkedThisStart;
     private int landscape = Surface.ROTATION_90;  // ROTATION_90 or ROTATION_270, from the sensor
     private OrientationEventListener sensor;
     private ContentObserver observer;
@@ -38,9 +39,13 @@ final class RotationGuard {
 
     void onResume() {
         resumed = true;
-        // with the permission: always locked while playing (before the first frame), so the game is
-        // landscape however the system treats the activity's orientation
-        if (Settings.System.canWrite(a)) apply();
+        // Locked only where the system doesn't turn the display for the activity's landscape by itself
+        // ("rotation_ignored": seen at the last check; then before the first frame, except at the first
+        // resume of each start, which checks again). Where it does, the rotation settings are never
+        // touched: another app, a lock screen, can turn the display as it wants and the game comes back
+        // in landscape on its own.
+        if (Settings.System.canWrite(a) && prefs.getBoolean("rotation_ignored", false) && checkedThisStart) apply();
+        checkedThisStart = true;
         // the system rotates (or doesn't) after the window is shown
         handler.postDelayed(this::check, 600);
         handler.postDelayed(this::check, 2000);
@@ -53,13 +58,19 @@ final class RotationGuard {
         restore();
     }
 
+    // (with the lock applied the display is landscape either way: the check above runs only unlocked)
     private boolean portrait() {
         int r = a.getDisplay() != null ? a.getDisplay().getRotation() : Surface.ROTATION_90;
         return r == Surface.ROTATION_0 || r == Surface.ROTATION_180;
     }
 
     private void check() {
-        if (!resumed || applied || !portrait()) return;
+        if (!resumed || applied) return;
+        if (!portrait()) {  // landscape without help: the system honours the orientation (again)
+            if (prefs.getBoolean("rotation_ignored", false)) prefs.edit().putBoolean("rotation_ignored", false).apply();
+            return;
+        }
+        prefs.edit().putBoolean("rotation_ignored", true).apply();
         if (Settings.System.canWrite(a)) {
             apply();
             return;
