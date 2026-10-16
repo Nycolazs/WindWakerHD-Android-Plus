@@ -9,6 +9,9 @@
 #include <dirent.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 
 #include <cstdio>
 #include <cstdlib>
@@ -559,6 +562,35 @@ void print_backtrace(int fd) {
         if (fd >= 0) write(fd, buf, len);
     }
 #endif
+}
+
+// ---------------------------------------------------------------- the app in the background
+static std::mutex g_pause_mutex;
+static std::condition_variable g_pause_cv;
+static std::atomic<bool> g_game_paused{false};
+
+void set_game_paused(bool paused) {
+    static const bool keepRunning = getenv("WWHD_BACKGROUND_RUN") && atoi(getenv("WWHD_BACKGROUND_RUN"));
+    if (keepRunning) return;
+    {
+        std::lock_guard<std::mutex> lk(g_pause_mutex);
+        g_game_paused.store(paused, std::memory_order_relaxed);
+    }
+    g_pause_cv.notify_all();
+}
+
+void wait_while_game_paused(bool log) {
+    if (!g_game_paused.load(std::memory_order_relaxed)) return;
+    auto t0 = std::chrono::steady_clock::now();
+    {
+        std::unique_lock<std::mutex> lk(g_pause_mutex);
+        g_pause_cv.wait(lk, [] { return !g_game_paused.load(std::memory_order_relaxed); });
+    }
+    if (!log) return;
+    char line[96];
+    snprintf(line, sizeof line, "[app] game paused in the background for %.1f s",
+             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+    log_line(line);
 }
 
 }  // namespace platform

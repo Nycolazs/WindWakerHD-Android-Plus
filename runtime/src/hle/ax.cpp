@@ -420,6 +420,9 @@ void frame_thread() {
     threads::set_service_core(0);  // the game's audio threads live on core 0
     auto next = std::chrono::steady_clock::now();
     while (g_running) {
+        // the app in the background: no mixing (the game's main thread waits too, platform.h)
+        platform::wait_while_game_paused(false);
+        if (std::chrono::steady_clock::now() - next > std::chrono::milliseconds(30)) next = std::chrono::steady_clock::now();
         // pace frames by the device: run slightly faster/slower to keep ~40 ms queued
         double level = (double)(audio::buffered_frames() - audio::target_frames()) / audio::target_frames();
         double stretch = 1.0 + std::clamp(level * 0.05, -0.05, 0.05);

@@ -462,6 +462,7 @@ JNI_FN(void, textInputDone)(JNIEnv* env, jclass, jboolean ok, jstring text) {
 
 JNI_FN(void, setPaused)(JNIEnv*, jclass, jboolean paused) {
     audio::set_paused(paused);
+    platform::set_game_paused(paused);
     if (paused && g_started) gfx::save_caches();
 }
 

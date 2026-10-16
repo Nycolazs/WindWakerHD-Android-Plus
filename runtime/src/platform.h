@@ -48,6 +48,15 @@ void log_line(const char* line);
 // new thread's stack with "out of memory", which may be the mapping limit rather than RAM.
 int process_numbers(char* buf, int size);
 
+// The app in the background (Android: the activity paused, screen locked or another app in front):
+// the game's main thread waits at the top of its frame (interp.cpp) until the app is back, so the
+// game neither plays on unseen nor keeps the CPU and GPU busy drawing for no window.
+// WWHD_BACKGROUND_RUN=1 keeps it running as before.
+// (the AX audio frame thread waits too: the mix and the game's sound threads took ~35% of a core
+// with nothing to hear; log: name the wait in the log when it ends)
+void set_game_paused(bool paused);
+void wait_while_game_paused(bool log = true);
+
 // print a host backtrace of the calling thread to stderr (async-signal-safe enough for the crash handler)
 void print_backtrace(int fd = -1);  // also into fd (a crash log) when >= 0
 

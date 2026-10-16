@@ -39,6 +39,7 @@
 #include "interp_pacing.h"
 #include "guest_addr.h"
 #include <ctime>
+#include "platform.h"
 #include "runtime.h"
 #include "savestate.h"
 #include "true60.h"
@@ -1116,6 +1117,7 @@ std::string pass_cpu_report() {
 
 extern "C" void hook_0203593C(Cpu* c) {
     using namespace interp;
+    platform::wait_while_game_paused();  // the app in the background: nothing runs or draws until it's back
     fx_pass_start();
     ss::service(c);  // save states: exact values are back in guest memory, all other threads idle
     mods::cheats_service();
