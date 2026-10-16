@@ -1046,7 +1046,8 @@ namespace mods { void cheats_service(); }  // mods/cheats.cpp
 static std::atomic<bool> g_menu_open{false};
 static uint64_t g_play_draw_step = 0;
 namespace interp {
-// the hybrid layout shows the GamePad: a game menu is open (dMenu_flag), or no game is being played
+// the hybrid layout shows the GamePad: a game menu is open (dMenu_flag), the Wind Waker's songs are up,
+// or no game is being played
 // (title, file select: the play scene's world step, true60.cpp site_025B00B0, has not run for 15 steps)
 bool menu_open() { return g_menu_open.load(std::memory_order_relaxed); }
 void note_play_draw() { g_play_draw_step = g_logic_steps; }
@@ -1055,10 +1056,15 @@ static void menu30_update() {
     using namespace interp;
     static uint64_t until = 0;
     const bool menu = ld8(GD(0x101EA069)) != 0;  // dMenu_flag (025986BC)
-    const bool gamepad = menu || g_logic_steps > g_play_draw_step + 15;
+    // the Wind Waker's song screen (issue #14): it is no dMenu, it lives on the GamePad while Link
+    // holds the baton, daPy_lk_c::mCurProc (+0x65F0) TACT_WAIT 0x9A .. TACT_PLAY_ORIGINAL 0x9D
+    const uint32_t link = true60::link();
+    const uint32_t proc = link >= 0x10000000u && link < 0x50000000u ? ld32(link + 0x65F0) : 0;
+    const bool baton = proc >= 0x9A && proc <= 0x9D;
+    const bool gamepad = menu || baton || g_logic_steps > g_play_draw_step + 15;
     if (gamepad != g_menu_open.load(std::memory_order_relaxed)) {
         g_menu_open.store(gamepad, std::memory_order_relaxed);
-        LOG("[interp] %s", gamepad ? (menu ? "menu open" : "no game in play") : "game in play");
+        LOG("[interp] %s", gamepad ? (menu ? "menu open" : baton ? "Wind Waker songs" : "no game in play") : "game in play");
     }
     bool on = false;
     if (g_mode40.load(std::memory_order_relaxed) && interp_on()) {
