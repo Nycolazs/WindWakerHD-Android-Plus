@@ -315,6 +315,12 @@ void link_executed(uint32_t link) {
     }
 }
 
+// a save state was loaded (savestate.cpp): a door event going on at this moment isn't in the loaded one
+void turbo_ss_reset() {
+    g_door_cut = g_door_event = false;
+    g_door_action = -1;
+}
+
 }  // namespace mods
 
 using namespace mods;

@@ -387,6 +387,9 @@
     <string name="opt_motion_hint">Mire inclinando o aparelho, ou com um controle que tenha sensores de movimento</string>
     <string name="opt_rumble">Vibração</string>
     <string name="opt_rumble_hint">No controle, ou neste aparelho ao jogar pelo toque</string>
+    <string name="opt_select_map">Select abre o mapa</string>
+    <string name="opt_select_map_hint">Um toque no Select do controle abre o menu direto na aba MAPAS (durante o jogo ou de outra aba)</string>
+    <string name="autosave_done">Salvo automaticamente (slot Auto)</string>
     <string name="opt_buttons">Botões do controle</string>
     <string name="opt_buttons_hint">Qual botão do controle aperta qual botão do Wii U</string>
     <string name="opt_buttons_default">Padrão</string>

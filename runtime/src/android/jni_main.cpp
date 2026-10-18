@@ -21,6 +21,7 @@
 #include "../input.h"
 #include "../interp.h"
 #include "../mods/climb.h"
+#include "../mods/map_shortcut.h"
 #include "../mods/mods.h"
 #include "../motion.h"
 #include "../platform.h"
@@ -584,6 +585,7 @@ JNI_FN(void, setOption)(JNIEnv* env, jclass, jstring name, jint value) {
     // autosave (savestate.cpp): seconds between automatic snapshots into the "Auto" slot (0 = off)
     else if (n == "autosave_secs") ss::set_autosave_seconds(value);
     else if (n == "autosave_now") ss::autosave_now();
+    else if (n == "open_map") map_shortcut::request();  // Select: the menu on its MAP tab
 }
 
 JNI_FN(jint, getOption)(JNIEnv* env, jclass, jstring name) {

@@ -2284,6 +2284,11 @@ void copy_surface(uint32_t src, uint32_t srcMip, uint32_t srcSlice, uint32_t dst
 // the game still draws it every frame (~130 draws, ~1 ms of GPU on an Adreno 650). Its draws go to
 // 854x480 targets (the game reuses the TV scene's memory for them, so the size is what tells them
 // apart; no TV-shaped target has it); they are left out then. WWHD_DRAW_HIDDEN_DRC=1 draws them anyway.
+// whether the GamePad picture is shown anywhere (in the window's layout or a second display)
+bool drc_shown() {
+    return __atomic_load_n(&g_drc_visible, __ATOMIC_RELAXED) || __atomic_load_n(&g_sc_drc.window, __ATOMIC_RELAXED);
+}
+
 bool skip_hidden_drc_draw(uint32_t w, uint32_t h) {
     static const bool drawAnyway = getenv("WWHD_DRAW_HIDDEN_DRC") && atoi(getenv("WWHD_DRAW_HIDDEN_DRC")) != 0;
     if (drawAnyway || h != 480 || (w != 854 && w != 855)) return false;

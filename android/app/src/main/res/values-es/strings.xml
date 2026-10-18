@@ -378,6 +378,9 @@
     <string name="opt_motion_hint">Apunta inclinando el dispositivo, o un mando con sensores de movimiento</string>
     <string name="opt_rumble">Vibración</string>
     <string name="opt_rumble_hint">En el mando, o en este dispositivo al jugar por tacto</string>
+    <string name="opt_select_map">Select abre el mapa</string>
+    <string name="opt_select_map_hint">Una pulsación corta del Select del mando abre el menú en la pestaña MAPA (jugando o desde otra pestaña)</string>
+    <string name="autosave_done">Guardado automático (ranura Auto)</string>
     <string name="opt_buttons">Botones del mando</string>
     <string name="opt_buttons_hint">Qué botón del mando pulsa cada botón de Wii U</string>
     <string name="opt_buttons_default">Por defecto</string>

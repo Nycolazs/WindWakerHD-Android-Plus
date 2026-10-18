@@ -301,6 +301,14 @@ struct FetchLast {
 };
 static FetchLast g_fetch_last;
 
+// a save state was loaded: the memory at every program address may hold another program now, and
+// the write tracking the hot entries rely on knows nothing of it (program_hash: hashed afresh)
+void ss_reset_programs() {
+    g_program_hashes.clear();
+    for (auto& h : g_program_hot) h = ProgramHot{};
+    g_fetch_last.frame = ~0ull;
+}
+
 static LatteFetchShader* get_fetch_shader(const uint32_t* regs, uint64_t* keyOut) {
     uint32_t prog = regs[mmSQ_PGM_START_FS] << 8;
     if (!prog) return nullptr;

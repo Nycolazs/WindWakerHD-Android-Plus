@@ -1517,12 +1517,22 @@ void copy_surface_impl(uint32_t srcAddr, uint32_t srcMip, uint32_t srcSlice, uin
     for (auto it = dr.first; it != dr.second; ++it) it->second->lastCheckedFrame = ~0ull;
 }
 
-// a save state was loaded: every surface may differ from guest memory now
+// a save state was loaded: every surface may differ from guest memory now. What the GPU drew is of
+// the moment before: a target the game samples as a texture is read from memory again (those at the
+// guest's size, in colour; the scaled ones are drawn whole every frame anyway), the depth buffer
+// peek_z reads is forgotten, and the shader programs are hashed afresh (other code may sit at their
+// addresses)
 void ss_reset_surfaces() {
     for (auto& [a, s] : R.surfaces) {
         s->dirty = true;
         s->lastCheckedFrame = ~0ull;
+        if (s->gpuWritten && !s->isDepth && s->img.width == s->width && s->img.height == s->height) {
+            s->gpuWritten = false;
+            s->contentHash = 0;  // uploaded even when the memory holds what was uploaded before the GPU drew into it
+        }
     }
+    R.mainDepthAddr = 0;
+    ss_reset_programs();
 }
 
 }  // namespace gfx

@@ -437,6 +437,8 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 new File(getNoBackupFilesDir(), "shadercache").getAbsolutePath(), base.getAbsolutePath());
         started = true;
         backupHandler.postDelayed(periodicBackup, 120_000);
+        autosaveSeen = autosaveFile().lastModified();
+        backupHandler.postDelayed(autosaveWatch, 2000);
         applyOptions();
         startThermal();
         startMotion();
@@ -469,6 +471,26 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         }
     };
     private final android.os.Handler backupHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+
+    // the autosave (savestate.cpp) writes the Auto slot on its own: say so when it did, so it can be
+    // seen working, and copy it out of the app
+    private long autosaveSeen;
+    File autosaveFile() { return new File(baseDir(), "states/slot6.bin"); }
+    private final Runnable autosaveWatch = new Runnable() {
+        @Override
+        public void run() {
+            if (!started) return;
+            long t = autosaveFile().lastModified();
+            if (t > autosaveSeen) {
+                autosaveSeen = t;
+                if (resumed) {
+                    android.widget.Toast.makeText(MainActivity.this, R.string.autosave_done, android.widget.Toast.LENGTH_SHORT).show();
+                    autoBackup();
+                }
+            }
+            backupHandler.postDelayed(this, 2000);
+        }
+    };
 
     // ------------------------------------------------------------------ saves outside the app (SaveVault)
     static final int PICK_VAULT = 9;
@@ -1427,6 +1449,12 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             selectDown = false;
             keyHandler.removeCallbacks(selectHeld);
             if (!pressedHere || selectOpenedMenu) return;
+            // Select opens the game's menu on its MAP tab (runtime/src/mods/map_shortcut.cpp), unless
+            // turned off or assigned to another button
+            if (prefs.getBoolean("select_map", true) && mapper.bitFor(KeyEvent.KEYCODE_BUTTON_SELECT) == Native.MINUS) {
+                Native.setOption("open_map", 1);
+                return;
+            }
             int bits = mapper.bitFor(KeyEvent.KEYCODE_BUTTON_SELECT);  // the − unless assigned otherwise
             mapper.pulse(bits, true);
             pushInput();
@@ -1525,6 +1553,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             Native.setPaused(false);
             backupHandler.removeCallbacks(periodicBackup);
             backupHandler.postDelayed(periodicBackup, 120_000);
+            backupHandler.removeCallbacks(autosaveWatch);
+            autosaveSeen = autosaveFile().lastModified();  // one written while away is not news
+            backupHandler.postDelayed(autosaveWatch, 2000);
             startThermal();
             startMotion();
             checkControllerConnected();

@@ -476,6 +476,7 @@ void ax_ss_save(ss::Writer& w) {
     w.pod(g_upsample_stage);
     w.pod(G);
     w.u32((uint32_t)g_aux_frame);
+    w.pod(g_drc_mix);  // added last: states written before end here
 }
 bool ax_ss_check(ss::Reader r, std::string& why) {
     bool running = r.u8();
@@ -500,6 +501,10 @@ void ax_ss_load(ss::Reader& r) {
     GuestBuffers g = r.pod<GuestBuffers>();
     if (G.tv48 && g.tv48 != G.tv48) LOG("[savestate] AX buffers moved (%08X -> %08X)", g.tv48, G.tv48);
     g_aux_frame = (int)r.u32() & 1;
+    // the GamePad mixes (an older state has none: silent until the game sets them again, rather
+    // than this session's for other voices)
+    if (!r.at_end()) r.bytes(g_drc_mix, sizeof g_drc_mix);
+    else memset(g_drc_mix, 0, sizeof g_drc_mix);
     memset(g_up_hist, 0, sizeof g_up_hist);
     audio::flush();
 }

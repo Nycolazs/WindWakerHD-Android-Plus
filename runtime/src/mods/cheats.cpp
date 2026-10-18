@@ -459,4 +459,10 @@ void cheats_service() {
         ld8(s + kCollect), ld8(s + kCollect + 1), ld8(s + kTact), ld8(s + kTriforce), ld8(s + kStageKeys), ld8(s + kStageDungeonItems));
 }
 
+// a save state was loaded (savestate.cpp): a flight going on at this moment isn't in the loaded one
+void cheats_ss_reset() {
+    g_flight = g_face_set = false;
+    g_move_link = 0;
+}
+
 }  // namespace mods

@@ -217,6 +217,9 @@ extern "C" void site_025ADB38(Cpu* c) { adjust_projection_args(c, 1, 2); }
 //     their values. Panes the game parks off the 16:9 screen are not drawn (they would show in the
 //     extra space).
 namespace interp { bool menu_open(); }
+#ifdef __ANDROID__
+namespace gfx { bool drc_shown(); }
+#endif
 extern "C" {
 void f_02874038_orig(Cpu* c);
 void f_028766CC_orig(Cpu* c);
@@ -241,6 +244,13 @@ struct RootScreens {
 };
 std::vector<RootScreens> g_root_tv;
 bool root_on_tv(uint32_t root) {
+#ifdef __ANDROID__
+    // the GamePad picture shown nowhere (Pro Controller mode, the TV layout): what the game draws
+    // there is never seen, so it doesn't make a layout a GamePad one. The menu's layout is drawn to
+    // both until the menu has opened on the TV: laid out for the GamePad, its background didn't
+    // cover the wider screen (a black strip) and its first page showed a left arrow for ~1 s.
+    if (!gfx::drc_shown()) return true;
+#endif
     std::lock_guard<std::mutex> lk(g_root_mu);
     for (auto& e : g_root_tv)
         if (e.root == root) return !e.drc || g_swaps + 1 - e.drc > 30;

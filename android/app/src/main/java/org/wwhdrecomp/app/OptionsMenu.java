@@ -844,6 +844,8 @@ final class OptionsMenu extends Dialog {
         if (a.prefs.getBoolean("motion", true))
             submenu(R.string.opt_gyro_recalibrate, R.string.opt_gyro_recalibrate_hint, "", a::recalibrateGyro);
         toggle(R.string.opt_rumble, R.string.opt_rumble_hint, a.prefs.getBoolean("rumble", true), a::setRumble);
+        toggle(R.string.opt_select_map, R.string.opt_select_map_hint, a.prefs.getBoolean("select_map", true),
+                on -> a.prefs.edit().putBoolean("select_map", on).apply());
         submenu(R.string.opt_buttons, R.string.opt_buttons_hint,
                 a.getString(a.inputMapper().isDefaultMap() ? R.string.opt_buttons_default : R.string.opt_buttons_custom),
                 () -> openPage(this::buttonsPage));

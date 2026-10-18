@@ -395,6 +395,9 @@
     <string name="opt_motion_hint">Aim by tilting the device, or a controller with motion sensors</string>
     <string name="opt_rumble">Rumble</string>
     <string name="opt_rumble_hint">On the controller, or this device if the controller has no rumble or while playing by touch</string>
+    <string name="opt_select_map">Select opens the map</string>
+    <string name="opt_select_map_hint">A short press of the controller\'s Select opens the menu on the MAP tab (from play or from another tab)</string>
+    <string name="autosave_done">Autosaved (Auto slot)</string>
     <string name="opt_buttons">Controller buttons</string>
     <string name="opt_buttons_hint">Which controller button presses which Wii U button</string>
     <string name="opt_buttons_default">Default</string>

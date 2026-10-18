@@ -162,6 +162,7 @@ uint32_t& draws_since_commit();  // draws recorded since the last submission
 void prepare(Image& img, Use use);
 // draws into the GamePad picture while no layout shows it are left out (vk_device.cpp)
 bool skip_hidden_drc_draw(uint32_t guestWidth, uint32_t guestHeight);
+bool drc_shown();  // the GamePad picture is on screen somewhere
 // Graphics setting: the far shadow cascade drawn (vk_draw.cpp)
 bool distant_shadows();
 void set_distant_shadows(bool v);
@@ -218,6 +219,9 @@ void hud_coverage_begin(Surface* tv);
 Image* hud_coverage(uint64_t frame);
 void retire_images(const std::vector<Image>& olds);  // several at once (one cache flush)
 void evict_unused_textures();  // frame boundary: textures the game hasn't sampled for minutes
+// a save state was loaded (gx2_ss_load, the GPU idle): the shader program hashes remembered by
+// address are forgotten (vk_draw.cpp; ss_reset_surfaces calls it)
+void ss_reset_programs();
 
 // ---- shaders (vk_shader.cpp)
 void shader_compiler_init();

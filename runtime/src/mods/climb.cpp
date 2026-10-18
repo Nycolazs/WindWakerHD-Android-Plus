@@ -119,6 +119,14 @@ void set_climb_enabled(bool on) {
     LOG("[climb] climb any wall %s", on ? "on" : "off");
 }
 ClimbHud climb_hud() { return {g_stamina.load(), g_alpha.load(), g_exhausted.load()}; }
+// a save state was loaded (savestate.cpp): the climb, or the wait after letting go, going on at
+// this moment isn't in the loaded one (the stamina is the player's and stays)
+void climb_ss_reset() {
+    g_convert = g_converted = false;
+    g_fake = g_block = false;
+    g_block_time = g_climb_time = 0;
+    g_prev_proc = -1;
+}
 }  // namespace mods
 
 // ---- dBgS::GetWallCode(cBgS_PolyInfo&) (024EF080): a plain wall reads as ivy (code 1) while

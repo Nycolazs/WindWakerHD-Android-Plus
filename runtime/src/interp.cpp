@@ -44,6 +44,7 @@
 #include "savestate.h"
 #include "true60.h"
 #include "mods/mods.h"
+#include "mods/map_shortcut.h"
 #include <functional>
 
 
@@ -1130,6 +1131,7 @@ extern "C" void hook_0203593C(Cpu* c) {
     fx_pass_start();
     ss::service(c);  // save states: exact values are back in guest memory, all other threads idle
     mods::cheats_service();
+    map_shortcut::service(c);  // Select: the menu on its MAP tab
     // debug: WWHD_CRASH_TEST=n crashes the game thread after n steps (to check the crash log; "a<n>":
     // abort() instead, as a GPU driver does)
     static const char* crashEnv = getenv("WWHD_CRASH_TEST");
