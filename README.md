@@ -54,6 +54,32 @@ Get the latest APK from the **[Releases page](../../releases/latest)**.
 
 ## What's new in Plus
 
+### 🆕 New in v1.12: no black strip in the item menu, Select opens the map, sturdier save states, an autosave you can see
+- **The item menu opens cleanly** with a widescreen picture: for about a second after opening it,
+  a black strip showed at the left and the first page had a left arrow. The menu is also drawn to
+  the (hidden) GamePad picture until it has opened on the TV, and a layout drawn to both was laid
+  out for the GamePad's 16:9 screen. While the GamePad picture isn't shown anywhere, what is
+  drawn there no longer counts.
+- **Select opens the map**: a short press of the controller's Select opens the menu straight on the
+  **MAP** tab, or goes to the MAP tab when the menu is already open. Holding Select (or Select +
+  Start) still opens the app's settings. Turn it off in **Controls → Select opens the map**.
+- **Save states that don't get corrupted**:
+  - Android moves memory the game doesn't touch for a while into compressed swap (zram). States
+    saved only the parts still in RAM, so the swapped parts were missing and came back as zeros
+    on load. Every part of the game's memory is now saved (and the scan runs on all cores, so
+    saving takes about 1 s).
+  - A damaged or cut-off state file is recognised ("file is corrupt") instead of crashing the
+    game, and a load that could only unpack part of the state says so.
+  - After a load:
+    - textures that were render targets are uploaded again, and the GamePad audio mix is
+      restored;
+    - moon jump, climbing and quick doors start from a clean state;
+    - the next autosave waits a whole interval, instead of writing over the slot just loaded.
+  - Leftover files of a save cut short (the app closed while writing, up to ~500 MB) are deleted
+    at start.
+- **An autosave you can see**: the **Auto** slot now has its picture, like the other slots (it
+  looked empty), and a short **"Autosaved"** notice shows when it is written.
+
 ### 🆕 New in v1.11.1: Beedle's shop no longer closes the game, a steady 60 fps (generated), a round telescope
 - **Leaving Beedle's Shop Ship no longer closes the game** (and the game starts normally again): on
   the way out the game sails you back to the sea room it noted on the way in, and halts if that room
@@ -381,6 +407,12 @@ Put **one** of these in a folder on your phone (for example `Download/WindWakerH
 > saves, uninstall it and install v1.11 the same way (steps 1–3). v1.11 installs directly over v1.7–v1.9.
 > From v1.11 on, with **Saves → Saves outside the app** allowed, a reinstall brings your save, save
 > states and settings back by itself.
+>
+> **Updating from v1.11 / v1.11.1 to v1.12?** v1.11's key was lost too, so v1.12 has a new key and
+> Android won't install it over v1.11.x. With **Saves → Saves outside the app** on (the
+> `WindWakerHD Plus` folder), uninstall v1.11.x and install v1.12: your save, save states and
+> settings come back by themselves. Without it, export your saves first (step 1 above). The game
+> files are deleted with the old app, so the game has to be extracted again.
 
 ---
 
@@ -405,8 +437,9 @@ If **≡** and **✎** are hidden, tap the bottom center of the screen to show t
 
 ### With a controller
 Connect any Bluetooth or USB gamepad. The touch controls disappear automatically; touch the
-screen to bring them back. **Hold Select** or **press Home** to open the settings menu. Remap the
-buttons in **Controls → Controller buttons**.
+screen to bring them back. **Hold Select** or **press Home** to open the settings menu. **A short
+press of Select** opens the game's menu on its **MAP** tab. Remap the buttons in **Controls →
+Controller buttons**.
 
 ### Editing the HUD
 Open **≡ → Graphics → HUD layout**. Each part of the HUD gets a frame:
@@ -503,7 +536,7 @@ ANDROID_NDK=$HOME/Android/Sdk/ndk/27.2.12479018 tools/android/build-llvm.sh
 
 cd android
 echo "sdk.dir=$HOME/Android/Sdk" > local.properties
-./gradlew assembleRelease -PwwhdDeviceRecomp -PwwhdVersionCode=16 -PwwhdVersionName=1.10
+./gradlew assembleRelease -PwwhdDeviceRecomp -PwwhdVersionCode=19 -PwwhdVersionName=1.12
 ```
 
 The APK is in `android/app/build/outputs/apk/release/`. Sign APKs you share with your own key
