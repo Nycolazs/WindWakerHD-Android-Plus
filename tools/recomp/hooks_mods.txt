@@ -18,3 +18,7 @@
 @025C3964 # scene change, exit type 62 (Obshop): the ship's sea room is stored
 @025C39F0 # the same, type 59 (Abship)
 @025C3A64 # exit type 61 (back to the sea): the stored room is read (the game halts if it isn't 0..63)
+# Title controller question answered with the GamePad (controller_selection.cpp, upstream #189)
+@026D44A8 # updateSelection: copied input event, before reading its kind
+026D50C4  # SelectController_00 draw: hide the automatically answered title prompt
+026F8B54  # Parts::draw: hide only the title background during automatic choice/caption fade
