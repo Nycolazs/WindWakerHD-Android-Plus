@@ -36,6 +36,9 @@
 #include <vector>
 
 #include "mods.h"
+#ifdef __ANDROID__
+#include "android/fps60.h"
+#endif
 #include "interp.h"
 #include "true60.h"
 #include "release.h"
@@ -387,8 +390,36 @@ static void thunder_service() {
             ld32(thunder + 4), ld32(thunder + 8), ld32(kEnvLight + 0xA40), ld8(kEnvLight + 0xD0B));
 }
 
+// test aid: WWHD_TEST_FPS_CYCLE=m,m,...[:secs] switches the frame rate setting (fps60.h modes) in turn
+// every `secs` (default 6) game seconds once a save file is loaded, as the app's menu does
+void fps_cycle_service() {
+    static const char* e = getenv("WWHD_TEST_FPS_CYCLE");
+    if (!e || save_addr() < 0x10000000 || !save_loaded(save_addr())) return;
+    static std::vector<int> modes;
+    static int period = 0, frames = 0;
+    static size_t next = 0;
+    if (!period) {
+        std::string s = e;
+        size_t colon = s.find(':');
+        period = 30 * (colon != std::string::npos ? std::max(1, atoi(s.c_str() + colon + 1)) : 6);
+        for (const char* p = s.c_str(); *p && *p != ':';) {
+            modes.push_back(atoi(p));
+            while (*p && *p != ',' && *p != ':') p++;
+            if (*p == ',') p++;
+        }
+    }
+    if (modes.empty() || ++frames < period) return;
+    frames = 0;
+    const int m = modes[next++ % modes.size()];
+    LOG("[test] frame rate mode %d", m);
+#ifdef __ANDROID__
+    fps60::set_mode(m);
+#endif
+}
+
 void warp_service() {
     thunder_service();
+    fps_cycle_service();
     static std::vector<std::string> places;
     static size_t next = 0;
     static int frames = -1, period = 0;
