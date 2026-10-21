@@ -209,6 +209,8 @@
 0256DDF8  # vrkumo_move: sky clouds drawn halfway
 0256A388  # dKyr_star_move: star twinkle drawn halfway
 0251D864  # dCloth_packet_c vertex fill: cloth drawn halfway after a simulation step
+025EC62C  # mDoExt_3DlineMat1 control-point upload (width overload): ropes at pass_t
+025ED1BC  # mDoExt_3DlineMat1 control-point upload (per-point widths): ropes at pass_t
 021625DC  # KoRL sail: custom cloth vertices and placement, at upload (interp_fx.cpp, issue #68)
 0245F638  # pirate ship sail: custom cloth vertices and placement, at upload
 023D0E68  # pirate ship skull flag: custom cloth vertices and placement, at upload
