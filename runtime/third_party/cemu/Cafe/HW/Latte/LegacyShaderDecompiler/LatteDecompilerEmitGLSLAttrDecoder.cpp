@@ -7,8 +7,13 @@
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "util/helpers/StringBuf.h"
+#include "vk/vertex_cpu_policy.h"
 
 #define _CRLF	"\r\n"
+
+// WWHD: the vertex attribute classes decoded on the CPU (vk/vertex_cpu_policy.h, issue #21), set once
+// at device creation before the first translation; 0 everywhere but PowerVR
+uint32_t g_latteCpuVertexClasses = 0;
 
 void _readLittleEndianAttributeU32x4(LatteDecompilerShader* shaderContext, StringBuf* src, uint32 attributeInputIndex)
 {
@@ -102,6 +107,16 @@ void LatteDecompiler_emitAttributeDecodeGLSL(LatteDecompilerShader* shaderContex
 	}
 
 	uint32 attributeInputIndex = attrib->semanticId;
+	if (gfx::cpu_vertex_selected(*attrib, g_latteCpuVertexClasses))
+	{
+		// WWHD (issue #21): the CPU already did the swap and conversion (vk/vertex_cpu_decode.h);
+		// float results arrive as vec4, integers as uvec4 (_emitAttributes)
+		if (attrib->nfa != 1)
+			src->addFmt("attrDecoder = floatBitsToUint(attrDataSem{});" _CRLF, attributeInputIndex);
+		else
+			src->addFmt("attrDecoder = attrDataSem{};" _CRLF, attributeInputIndex);
+		return;
+	}
 	if( attrib->endianSwap == LatteConst::VertexFetchEndianMode::SWAP_U32 )
 	{
 		if( attrib->format == Latte::E_HWFMT::HWFMT_32_32_32_32_FLOAT && attrib->nfa == 2 )

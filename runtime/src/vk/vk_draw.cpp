@@ -21,6 +21,8 @@ extern "C" uint64_t g_draw_state_gen;    // gx2_core.cpp: bumped by any non-data
 #include "vk.h"
 #include "../mem_writes.h"
 #include "flat_table.h"
+#include "vertex_cpu_decode.h"
+#include "vertex_cpu_policy.h"
 
 #include <climits>
 #include <condition_variable>
@@ -1075,7 +1077,9 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
     uint64_t oldKey = 0;
     auto finish_key = [&](uint64_t k, const uint32_t* w, uint32_t count) {
         k = hash_bytes(w, count * 4, k);
-        if (vertex) k ^= fsKey * 31;
+        // vertex inputs decoded on the CPU (PowerVR) translate differently: their own keys, also in
+        // the key tables of earlier sessions (shaderkeys); 0 elsewhere
+        if (vertex) k ^= fsKey * 31 ^ (uint64_t)R.vertexCpuClasses * 0x9E3779B97F4A7C15ull;
         else k ^= link.key * 37 ^ (uint64_t)area * 0x9E3779B97F4A7C15ull;  // link.key 0 when every input is fed
         return k;
     };
@@ -1652,23 +1656,35 @@ static Pipeline* get_pipeline(const uint32_t* regs, Shader* vs, Shader* ps, Latt
     d->stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vs->mod->module, "main", nullptr};
     d->stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT,
                     hud_cov_slot(st) ? coverage_module(ps->mod).module : ps->mod->module, "main", nullptr};
-    // vertex input: attributes fetched as uint and decoded (byte-swapped) in the shader
+    // vertex input: attributes fetched as uint and decoded (byte-swapped) in the shader; those decoded
+    // on the CPU (vertex_cpu_policy.h, PowerVR) as 4 floats or uints from the group's converted stream
+    const uint32_t cpuMask = R.vertexCpuClasses;
     for (auto& g : fs->bufferGroups) {
-        bool instanced = false, any = false;
+        bool instanced = false, anyRaw = false, anyCpu = false;
+        const uint32_t cpuCount = cpu_vertex_count(g, cpuMask);
+        const uint32_t cpuBinding = cpuCount ? cpu_vertex_binding(*fs, g, cpuMask, R.props.limits.maxVertexInputBindings) : 0;
         for (sint32 j = 0; j < g.attribCount; j++) {
             auto& a = g.attrib[j];
             sint32 loc = vs->dec->resourceMapping.attributeMapping[a.semanticId];
             if (loc < 0) continue;
             VkFormat vf = vertex_format((uint32_t)a.format);
             if (vf == VK_FORMAT_UNDEFINED) continue;
-            d->attribs.push_back({(uint32_t)loc, (uint32_t)g.attributeBufferIndex, vf, (uint32_t)a.offset});
+            if (cpu_vertex_selected(a, cpuMask)) {
+                if (cpuBinding >= R.props.limits.maxVertexInputBindings) continue;  // no binding left (never seen)
+                d->attribs.push_back({(uint32_t)loc, cpuBinding, cpu_vertex_format(a), cpu_vertex_offset(g, j, cpuMask)});
+                anyCpu = true;
+            } else {
+                d->attribs.push_back({(uint32_t)loc, (uint32_t)g.attributeBufferIndex, vf, (uint32_t)a.offset});
+                anyRaw = true;
+            }
             if (a.fetchType == LatteConst::VertexFetchType2::INSTANCE_DATA) instanced = true;
-            any = true;
         }
-        if (!any) continue;
+        if (!anyRaw && !anyCpu) continue;
         uint32_t stride = (regs[mmSQ_VTX_ATTRIBUTE_BLOCK_START + g.attributeBufferIndex * 7 + 2] >> 11) & 0xFFFF;
-        d->bindings.push_back({(uint32_t)g.attributeBufferIndex, stride,
-                               instanced && stride ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX});
+        const VkVertexInputRate rate = instanced && stride ? VK_VERTEX_INPUT_RATE_INSTANCE : VK_VERTEX_INPUT_RATE_VERTEX;
+        if (anyRaw) d->bindings.push_back({(uint32_t)g.attributeBufferIndex, stride, rate});
+        // one converted element per guest element: 16 bytes for each selected attribute
+        if (anyCpu) d->bindings.push_back({cpuBinding, stride ? 16 * cpuCount : 0, rate});
     }
     d->vi.vertexBindingDescriptionCount = (uint32_t)d->bindings.size();
     d->vi.pVertexBindingDescriptions = d->bindings.data();
@@ -3220,6 +3236,74 @@ static Upload vertex_buffer(uint32_t addr, uint32_t size) {
     return u;
 }
 
+// The attributes of a group decoded on the CPU (vertex_cpu_policy.h, PowerVR), exactly like the
+// shader decoder would (vertex_cpu_decode.h): 16 bytes each, interleaved per element, for every
+// element of the declared buffer (the draw's vertex range isn't known here). A conversion is shared
+// by the draws of a submission while the game hasn't written the buffer since (as vertex_buffer;
+// WWHD_TRACK_WRITES=0: converted again for every draw).
+static Upload cpu_vertex_stream(const LatteParsedFetchShaderBufferGroup& g, uint32_t addr, uint32_t size, uint32_t stride,
+                                uint32_t attributes) {
+    const uint32_t mask = R.vertexCpuClasses;
+    // the group's layout as the stream sees it: which attributes, their formats and offsets
+    uint64_t layout = hash_bytes(&stride, sizeof stride, 0x435055);
+    for (int j = 0; j < g.attribCount; ++j) {
+        const auto& a = g.attrib[j];
+        if (!cpu_vertex_selected(a, mask)) continue;
+        const uint32_t v[5] = {(uint32_t)a.format, a.nfa, a.isSigned, (uint32_t)a.endianSwap, a.offset};
+        layout = hash_bytes(v, sizeof v, layout);
+    }
+    struct Converted { Upload u; uint32_t gen; };
+    static std::unordered_map<uint64_t, Converted> converted;
+    static uint64_t serial = ~0ull;
+    command_buffer();
+    if (R.cmdSerial != serial) {  // transient memory is only valid within one submission
+        converted.clear();
+        serial = R.cmdSerial;
+    }
+    const uint64_t key = hash_bytes(&layout, sizeof layout, (uint64_t)addr << 32 | size);
+    if (g_track_writes) {
+        auto it = converted.find(key);
+        if (it != converted.end() && memw::unchanged_since(addr, size, it->second.gen)) return it->second.u;
+    }
+    uint64_t elements = stride ? ((uint64_t)size + stride - 1) / stride : 1;
+    // a buffer declared far larger than any mesh (a stray size): the elements up to 256 MiB of stream
+    if (elements * attributes * 16 > (256u << 20)) {
+        static int logged = 0;
+        if (logged++ < 4) LOG("[vk] vertex attributes on the CPU: buffer %08X+%X cut to 256 MiB of converted data", addr, size);
+        elements = (256u << 20) / (attributes * 16);
+    }
+    const uint64_t bytes = elements * attributes * 16;
+    const uint32_t gen = memw::now();  // before reading: a write during it makes the next use convert again
+    Upload u = upload_alloc(std::max<VkDeviceSize>(bytes, 16), 16);
+    auto* out = (uint32_t*)u.ptr;
+    const uint8_t* guest = mem::ptr(addr);
+    for (int j = 0; j < g.attribCount; ++j) {
+        const auto& a = g.attrib[j];
+        if (!cpu_vertex_selected(a, mask)) continue;
+        static std::set<uint32_t> unsupported;
+        uint8_t zero[16]{};
+        uint32_t probe[4];
+        const uint32_t id = (uint32_t)a.format | a.nfa << 8 | a.isSigned << 12 | (uint32_t)a.endianSwap << 16;
+        if (!cpu_decode_attribute(a, zero, probe) && unsupported.insert(id).second)
+            LOG("[vk] vertex attributes on the CPU: no decoder for format 0x%02x nfa %u signed %u endian %u (reads as zero, like the shader)",
+                (unsigned)a.format, (unsigned)a.nfa, (unsigned)a.isSigned, (unsigned)a.endianSwap);
+    }
+    for (uint64_t e = 0; e < elements; ++e) {
+        uint32_t slot = 0;
+        for (int j = 0; j < g.attribCount; ++j) {
+            const auto& a = g.attrib[j];
+            if (!cpu_vertex_selected(a, mask)) continue;
+            const uint64_t at = e * stride + a.offset;
+            uint32_t value[4] = {0, 0, 0, 0};
+            if (at + cpu_vertex_bytes(a) <= size) cpu_decode_attribute(a, guest + at, value);
+            memcpy(out + (e * attributes + slot++) * 4, value, 16);
+        }
+    }
+    g_bytes_vtx += bytes;
+    converted[key] = {u, gen};
+    return u;
+}
+
 // ---------------------------------------------------------------- draws
 // What a draw resolved (shaders, targets, textures, pipeline, viewport limits): reused by the next
 // draws while only data registers change (see the fast path in draw)
@@ -3343,15 +3427,24 @@ static void record_draw(const uint32_t* regs, const Prepared& P, uint32_t prim, 
         uint32_t addr = regs[mmSQ_VTX_ATTRIBUTE_BLOCK_START + g.attributeBufferIndex * 7];
         uint32_t size = regs[mmSQ_VTX_ATTRIBUTE_BLOCK_START + g.attributeBufferIndex * 7 + 1] + 1;
         if (!addr || addr + (uint64_t)size > 0x100000000ull) continue;
-        Upload u = vertex_buffer(addr, size);
-        VkDeviceSize off = u.offset;
-        uint32_t slot = (uint32_t)g.attributeBufferIndex;
-        if (slot < 16 && g_ds.valid && g_ds.vb[slot] == u.buf && g_ds.vbOffset[slot] == off) continue;
-        vkCmdBindVertexBuffers(cmd, slot, 1, &u.buf, &off);
-        if (slot < 16) {
-            g_ds.vb[slot] = u.buf;
-            g_ds.vbOffset[slot] = off;
+        auto bind = [&](uint32_t slot, const Upload& u) {
+            VkDeviceSize off = u.offset;
+            if (slot < 16 && g_ds.valid && g_ds.vb[slot] == u.buf && g_ds.vbOffset[slot] == off) return;
+            vkCmdBindVertexBuffers(cmd, slot, 1, &u.buf, &off);
+            if (slot < 16) {
+                g_ds.vb[slot] = u.buf;
+                g_ds.vbOffset[slot] = off;
+            }
+        };
+        // attributes decoded on the CPU (PowerVR): the group's converted stream, at the binding the
+        // pipeline fetches it from; the raw copy only when some attribute still reads the guest's bytes
+        if (const uint32_t cpuCount = cpu_vertex_count(g, R.vertexCpuClasses)) {
+            const uint32_t slot = cpu_vertex_binding(*fs, g, R.vertexCpuClasses, R.props.limits.maxVertexInputBindings);
+            const uint32_t stride = (regs[mmSQ_VTX_ATTRIBUTE_BLOCK_START + g.attributeBufferIndex * 7 + 2] >> 11) & 0xFFFF;
+            if (slot < R.props.limits.maxVertexInputBindings) bind(slot, cpu_vertex_stream(g, addr, size, stride, cpuCount));
+            if (cpuCount == (uint32_t)g.attribCount) continue;
         }
+        bind((uint32_t)g.attributeBufferIndex, vertex_buffer(addr, size));
     }
     bind_stage(cmd, pipe->layout, regs, vs, true, vtex, targetScale, targetScaleY);
     bind_stage(cmd, pipe->layout, regs, ps, false, ptex, targetScale, targetScaleY);

@@ -28,6 +28,7 @@
 #include "runtime.h"
 #include "vk.h"
 #include "vk_window.h"
+#include "vertex_cpu_policy.h"
 #include "../aspect.h"
 namespace interp { bool mode40(); }  // interp.cpp: 40 fps needs the panel at 120 Hz
 
@@ -975,6 +976,15 @@ static void create_device() {
         if (g_driver_fallback) LOG("[vk] the installed GPU driver could not be loaded; the system driver runs");
         LOG("[vk] driver: %s (Vulkan %u.%u.%u)", R.driverInfo.c_str(), VK_API_VERSION_MAJOR(R.props.apiVersion),
             VK_API_VERSION_MINOR(R.props.apiVersion), VK_API_VERSION_PATCH(R.props.apiVersion));
+    }
+
+    // PowerVR decodes some byte-swapped vertex attributes wrongly in the shader (issue #21): those are
+    // decoded on the CPU; decided before the first shader is translated (their inputs change with it)
+    {
+        const CpuVertexChoice c = choose_cpu_vertices(R.props.vendorID, getenv("WWHD_VK_VERTEX_CPU"));
+        R.vertexCpuClasses = g_latteCpuVertexClasses = c.mask;
+        if (c.mask || getenv("WWHD_VK_VERTEX_CPU"))
+            LOG("[vk] vertex attributes decoded on the CPU: %s (%s)", cpu_vertex_class_names(c.mask).c_str(), c.reason);
     }
 
     vkGetPhysicalDeviceQueueFamilyProperties(R.pd, &n, nullptr);

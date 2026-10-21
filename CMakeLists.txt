@@ -58,6 +58,9 @@ endif()
 add_library(cemu_latte STATIC ${CEMU_SOURCES})
 target_include_directories(cemu_latte PUBLIC ${CEMU_DIR} ${CEMU_DIR}/Cafe ${CMAKE_SOURCE_DIR}/runtime/third_party/fmt/include)
 target_compile_options(cemu_latte PRIVATE "SHELL:-include ${CEMU_DIR}/cemu_shim.h")
+# the decompiler reads which vertex attributes the CPU decodes (runtime/src/vk/vertex_cpu_policy.h);
+# after the vendored directories so their headers keep precedence
+target_include_directories(cemu_latte AFTER PRIVATE ${CMAKE_SOURCE_DIR}/runtime/src)
 if(APPLE)
   target_include_directories(cemu_latte PUBLIC ${CMAKE_SOURCE_DIR}/runtime/third_party/metal-cpp)
   target_compile_definitions(cemu_latte PUBLIC ENABLE_METAL=1)

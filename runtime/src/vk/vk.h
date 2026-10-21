@@ -122,6 +122,7 @@ struct Renderer {
     bool mirrorClampToEdge = false;
     bool uploadCached = false;   // transient upload memory is CPU-cached (copy_deduped compares in it)
     bool shaderFloat16 = false;  // 16-bit float arithmetic in shaders (frame generation)
+    uint32_t vertexCpuClasses = 0;  // vertex attributes decoded on the CPU (vertex_cpu_policy.h; PowerVR)
     VkPipelineCache pipelineCache = VK_NULL_HANDLE;
     std::mutex queueMutex;  // vkQueueSubmit/Present from the render thread, waits from the UI thread
     // vkAcquireNextImageKHR (render thread) and vkQueuePresentKHR (record thread) on the same swapchain
