@@ -54,6 +54,31 @@ Get the latest APK from the **[Releases page](../../releases/latest)**.
 
 ## What's new in Plus
 
+### 🆕 New in v1.13: the first start in half the time, Cemu content packs, PowerVR and Huawei fixes
+- **The game code is prepared in about half the time** at the first start (and after updates that
+  change it): on a Galaxy S20 FE **4.6 minutes instead of about 10**. The functions a play through
+  the game reaches (a tour of 25 places: every dungeon and boss room, the islands) are optimized as
+  before; the ~21,000 others, which a play never or hardly ever runs, are compiled quickly. The game
+  runs as fast as before (the game thread's time in Outset, Windfall, the Forbidden Woods and Dragon
+  Roost Cavern is the same). Phones with enough free memory also compile on 4 cores instead of 3.
+- **Content packs (Cemu mods)**: **Mods → Content packs** installs Cemu graphic packs that replace
+  the game's files (models such as the Linkle mod, textures, texts) from a folder, or reads them
+  from `WindWakerHD Plus/Mods`. Each can be turned on and off. Cemu's code patches can't apply to
+  the recompiled game.
+- **PowerVR (Pixel 10 Pro and others)**: broken, spiky geometry fixed — the vertex attributes these
+  GPUs read wrongly are converted on the CPU (from the original project, #207).
+- **Huawei Kirin (Maleoon)**: compressed textures are decoded on the CPU, and the GPU decoder was
+  rewritten without the constructs mobile shader compilers choke on (from the original project).
+- **60 fps (generated)**: the scene's depth is read texel by texel. The gathered reads it used froze
+  an Adreno 650 until the phone restarted in another port and can give stray lines on some drivers;
+  on Mali, frame generation uses 32-bit shaders (garbage and flicker on Mali-G52).
+- **The Auto slot always has its picture**: a slot without one (an autosave of an older version)
+  gets it when it is loaded.
+- From the original project: a crash at boot on slow storage (0275D21C), quick doors leaving the
+  Forbidden Woods' spore rooms, the Pirate's Charm ringing again with frame interpolation, Link's
+  hand no longer flying in at 60/120 fps, ropes blended with what they hang from, Sploosh Kaboom's
+  markers, and the title's controller question answered by itself in GamePad mode.
+
 ### 🆕 New in v1.12: no black strip in the item menu, Select opens the map, sturdier save states, an autosave you can see
 - **The item menu opens cleanly** with a widescreen picture: for about a second after opening it,
   a black strip showed at the left and the first page had a left arrow. The menu is also drawn to
@@ -413,6 +438,11 @@ Put **one** of these in a folder on your phone (for example `Download/WindWakerH
 > `WindWakerHD Plus` folder), uninstall v1.11.x and install v1.12: your save, save states and
 > settings come back by themselves. Without it, export your saves first (step 1 above). The game
 > files are deleted with the old app, so the game has to be extracted again.
+>
+> **Updating to v1.13?** v1.13 is signed again with the v1.7 key (v1.12's was lost), which stays from
+> now on (backed up outside this PC). **v1.7–v1.11.1 install v1.13 directly.** From **v1.12** (or
+> v1.10): turn on **Saves → Saves outside the app**, uninstall, install v1.13; the saves come back by
+> themselves (or export them first, step 1 above).
 
 ---
 
@@ -499,6 +529,12 @@ Gohma's room, Forest Haven, Forbidden Woods, Tower of the Gods, Hyrule and Forsa
 | **Turnip v26.3.0-20261013-r2** ([The412Banner/Banners-Turnip](https://github.com/The412Banner/Banners-Turnip/releases), the plain `Turnip-v26.3.0-….zip`) | **60 fps in all nine places**, Gohma's room at 26 ms of GPU time per game frame |
 | Qualcomm v502 (the phone's own) | 60 fps in all nine places; the fastest GPU time (12–14 ms per frame in Outset, against 17–22 for Turnip), so the best choice for the 60 fps mode that draws every frame |
 | Turnip 26.0 R8 (K11MCH1), Stable Turnip v2 / Mainline v32 (whitebelyash) | ~40 fps in Gohma's room and Forest Haven, 60 elsewhere |
+
+**Which driver on an Adreno 650 (Galaxy S20 / S20 FE, Snapdragon 865)?** Keep the phone's own
+Qualcomm driver: it has the fastest GPU time with this game. Of the common packages, **Qualcomm
+v615.77** (K11MCH1, made for Adreno 6xx) is the one worth trying; among Turnip builds, Banners-Turnip
+26.3 or K11MCH1 25.3.0 R11. Avoid `adreno676.53` (Adreno 7xx only), plain Turnip 24.1 R18 (breaks
+rendering on 6xx) and Turnip 26.0 R8 (slow here). Try a new driver at Original (720p) first.
 
 Turnip above 1x resolution is stable since v1.7, but too slow on the Adreno 650 (1.5x: about 20 fps
 in a heavy place): keep **Original (720p)** with Turnip on this GPU.
