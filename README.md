@@ -54,7 +54,7 @@ Get the latest APK from the **[Releases page](../../releases/latest)**.
 
 ## What's new in Plus
 
-### 🆕 New in v1.13: the first start in half the time, Cemu content packs, PowerVR and Huawei fixes
+### 🆕 New in v1.13: the first start in half the time, save states from anywhere, Cemu content packs, PowerVR and Huawei fixes
 - **The game code is prepared in about half the time** at the first start (and after updates that
   change it): on a Galaxy S20 FE **4.6 minutes instead of about 10**. The functions a play through
   the game reaches (a tour of 25 places: every dungeon and boss room, the islands) are optimized as
@@ -72,6 +72,12 @@ Get the latest APK from the **[Releases page](../../releases/latest)**.
 - **60 fps (generated)**: the scene's depth is read texel by texel. The gathered reads it used froze
   an Adreno 650 until the phone restarted in another port and can give stray lines on some drivers;
   on Mali, frame generation uses 32-bit shaders (garbage and flicker on Mali-G52).
+- **Save states load from anywhere**: loading a state at the title or the file select used to say
+  "cannot load here" (the game's threads aren't where a played file has them). Now the app goes into
+  the game by itself and loads the state as soon as it can; a notice shows meanwhile.
+- **A save state that crashes a few seconds after loading**: that is an Auto slot written by v1.11,
+  whose autosave could leave parts of the game's memory out; it can't be repaired, and the crash log
+  now names the state loaded last. Autosaves and states of v1.12 and later load and play on.
 - **The Auto slot always has its picture**: a slot without one (an autosave of an older version)
   gets it when it is loaded.
 - From the original project: a crash at boot on slow storage (0275D21C), quick doors leaving the
