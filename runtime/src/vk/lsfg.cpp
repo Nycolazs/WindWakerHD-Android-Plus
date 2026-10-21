@@ -242,6 +242,7 @@ struct Pipe {
     VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline pipe = VK_NULL_HANDLE;
+    uint32_t dynamic = 0;  // uniform buffers (dynamic offsets at binding)
 };
 Pipe g_pipes[kShaders];
 VkSampler g_borderBlack = VK_NULL_HANDLE, g_borderWhite = VK_NULL_HANDLE, g_clamp = VK_NULL_HANDLE;
@@ -327,7 +328,11 @@ void create_pipelines() {
     for (uint32_t i : used) {
         Pipe& p = g_pipes[i];
         std::vector<VkDescriptorSetLayoutBinding> bs;
-        for (uint32_t b : g_shaders[i].bindings) bs.push_back({b, type_of(b), 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+        p.dynamic = 0;
+        for (uint32_t b : g_shaders[i].bindings) {
+            bs.push_back({b, type_of(b), 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
+            p.dynamic += type_of(b) == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+        }
         VkDescriptorSetLayoutCreateInfo dl{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         dl.bindingCount = (uint32_t)bs.size();
         dl.pBindings = bs.data();
@@ -584,7 +589,8 @@ void run(VkCommandBuffer cmd, const std::vector<Pass>& passes, uint32_t frameInd
         const Pipe& pp = g_pipes[p.shader];
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pp.pipe);
         uint32_t off = (uint32_t)((frameIndex * kMaxLevels + p.level) * kUboStride);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pp.layout, 0, 1, &p.set, 1, &off);
+        // a dynamic offset only for shaders with a uniform buffer (an extra one is invalid usage)
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pp.layout, 0, 1, &p.set, pp.dynamic ? 1 : 0, &off);
         vkCmdDispatch(cmd, p.gx, p.gy, 1);
         for (auto* t : p.outs) written.push_back(t);
         for (auto* t : p.ins) read.push_back(t);
@@ -600,8 +606,10 @@ bool load(const Config& cfg) {
     std::vector<uint8_t> file;
     std::map<uint32_t, std::pair<size_t, size_t>> res;
     std::string err;
-    // the 16-bit float set when the device can run it
-    bool fp16 = R.shaderFloat16 && !getenv("WWHD_LSFG_FP32");
+    // the 16-bit float set when the device can run it; not on Mali (the G52's driver r32p1 draws
+    // garbage with it: black and blue shapes, flicker)
+    const bool mali = R.props.vendorID == 0x13B5;
+    bool fp16 = R.shaderFloat16 && !mali && !getenv("WWHD_LSFG_FP32");
     if (!read_dll(cfg.dll, file, res, err) || !read_set(file, res, fp16 ? kFp16Base : kFp32Base, g_shaders, err)) {
         LOG("[fg] %s: %s; frame generation disabled", cfg.dll.c_str(), err.c_str());
         set_error(err);
