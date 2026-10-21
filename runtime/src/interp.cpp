@@ -1149,7 +1149,7 @@ namespace interp {
 bool menu_open() { return g_menu_open.load(std::memory_order_relaxed); }
 void note_play_draw() { g_play_draw_step = g_logic_steps; }
 }  // namespace interp
-static void menu30_update() {
+static void menu30_update(Cpu* c) {
     using namespace interp;
     static uint64_t until = 0;
     const bool menu = ld8(GD(0x101EA069)) != 0;  // dMenu_flag (025986BC)
@@ -1158,10 +1158,23 @@ static void menu30_update() {
     const uint32_t link = true60::link();
     const uint32_t proc = link >= 0x10000000u && link < 0x50000000u ? ld32(link + 0x65F0) : 0;
     const bool baton = proc >= 0x9A && proc <= 0x9D;
-    const bool gamepad = menu || baton || g_logic_steps > g_play_draw_step + 15;
+    // With the baton out the overlay must NOT come up (conducting and playing a song are done on the
+    // TV picture): only the pause does. And that pause is not a dMenu (dMenu_flag stays 0 the whole
+    // time the baton is out, measured): it is its own state of the in-game UI (hdIngameUi, the state
+    // machine "Select opens the map" drives too). StateIDs measured on the device:
+    //   0x29F play            0x2A3 the pause menu (dMenu)
+    //   0x2AA conducting      0x2AB the pause opening (a frame or two, transient)
+    //   0x2AC the pause open (the song sheet: stable, 40 samples in a row doing nothing)
+    //   0x2AF a song being played
+    // So the overlay goes up for 0x2AB/0x2AC and nothing else while the baton is out (issue #14
+    // follow-up). The guest call is skipped unless the baton is out.
+    constexpr uint32_t kBatonPauseOpening = 0x2AB, kBatonPauseOpen = 0x2AC;
+    const uint32_t baton_ui = baton ? map_shortcut::ui_state_key(c) : 0;
+    const bool baton_pause = baton_ui == kBatonPauseOpening || baton_ui == kBatonPauseOpen;
+    const bool gamepad = menu || baton_pause || g_logic_steps > g_play_draw_step + 15;
     if (gamepad != g_menu_open.load(std::memory_order_relaxed)) {
         g_menu_open.store(gamepad, std::memory_order_relaxed);
-        LOG("[interp] %s", gamepad ? (menu ? "menu open" : baton ? "Wind Waker songs" : "no game in play") : "game in play");
+        LOG("[interp] %s", gamepad ? (menu ? "menu open" : baton_pause ? "Wind Waker pause" : baton ? "Wind Waker songs" : "no game in play") : "game in play");
     }
     bool on = false;
     if (g_mode40.load(std::memory_order_relaxed) && interp_on()) {
@@ -1235,7 +1248,7 @@ extern "C" void hook_0203593C(Cpu* c) {
         raise(SIGSEGV);
     }
     g_passes++;
-    menu30_update();
+    menu30_update(c);
     // test aid: WWHD_INTERP_AT_STEP=n switches interpolation on after n frames
     static uint64_t passes = 0;
     static const uint64_t at = getenv("WWHD_INTERP_AT_STEP") ? strtoull(getenv("WWHD_INTERP_AT_STEP"), nullptr, 10) : 0;

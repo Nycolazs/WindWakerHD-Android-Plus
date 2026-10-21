@@ -85,4 +85,20 @@ void service(Cpu* c) {
     c->core = core;
     c->thread = th;
 }
+
+// The in-game UI's current StateID (0 when there is none): the hybrid layout needs it to tell the
+// pause reached with the Wind Waker out (a state of this machine) from conducting. The guest calls
+// leave the registers as the game left them for this frame (as in service()).
+uint32_t ui_state_key(Cpu* c) {
+    const uint32_t ui = ld32(kIngameUi);
+    if (!object(ui)) return 0;
+    Cpu saved = *c;
+    const uint32_t s = ui_state(c, ui);
+    uint32_t core = c->core;
+    void* th = c->thread;
+    *c = saved;
+    c->core = core;
+    c->thread = th;
+    return s;
+}
 }  // namespace map_shortcut
