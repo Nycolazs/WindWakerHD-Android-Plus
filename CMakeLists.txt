@@ -116,6 +116,9 @@ if(APPLE)
   # controls mapping unit tests (runtime/src/input_map.cpp)
   add_executable(input_map_test runtime/tools/input_map_test.cpp runtime/src/input_map.cpp)
   target_include_directories(input_map_test PRIVATE runtime/src)
+  # frame interpolation: hidden joints that were not updated (Link's hand poses) are drawn at the current step (runtime/src/interp_joints.h)
+  add_executable(interp_joints_test runtime/tools/interp_joints_test.cpp)
+  target_compile_options(interp_joints_test PRIVATE -UNDEBUG)
 
 elseif(ANDROID)
   # ---- Android: libwwhd.so, native GX2 on Vulkan; the Java activity in android/ loads it
