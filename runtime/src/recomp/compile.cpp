@@ -13,7 +13,10 @@
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/TargetParser/Host.h>
 #include <llvm/Transforms/IPO/AlwaysInliner.h>
+#include <llvm/Transforms/Scalar/EarlyCSE.h>
 #include <llvm/Transforms/Scalar/InstSimplifyPass.h>
+#include <llvm/Transforms/Scalar/SROA.h>
+#include <llvm/Transforms/Scalar/SimplifyCFG.h>
 
 #if defined(__aarch64__) && defined(__linux__)
 #include <sys/auxv.h>
@@ -21,8 +24,10 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "../release.h"
@@ -87,9 +92,52 @@ bool compile_game(const CompileOptions& opt, CompileResult& res, std::string& er
     std::string features = opt.cpu.empty() ? host_features() : "";
     std::string tune = opt.cpu.empty() ? llvm::sys::getHostCPUName().str() : "";
 
+    // Hot and cold code (as LASRecomp-Android-Plus does): most of the game's ~40000 functions never run
+    // in a play, or run too rarely to matter, yet -O3 on them was most of the first start's ~10 minutes
+    // on a phone that soon runs hot. The functions of hot_functions.txt (what a play through the game
+    // reached) are compiled as before; the others at coldOptLevel, in modules of their own (LASRecomp
+    // measured cold functions marked optnone inside -O3 modules 1.8x slower to build than separate ones).
+    // On a Galaxy S20 FE, 4 jobs: everything at -O3 363 s, with the list 253 s, everything cold 94 s;
+    // a module at -O3 35 s, at the cold level 9 s. The game thread's time in Outset stays the same.
+    std::unordered_set<uint32_t> hot;
+    for (size_t a = 0; a < opt.hotList.size();) {
+        size_t b = opt.hotList.find('\n', a);
+        if (b == std::string::npos) b = opt.hotList.size();
+        // (USA addresses, as the hook lists: the running release's)
+        if (b > a && opt.hotList[a] != '#')
+            if (uint32_t e = release::code((uint32_t)strtoul(opt.hotList.substr(a, b - a).c_str(), nullptr, 16))) hot.insert(e);
+        a = b + 1;
+    }
+    // and what they call directly (bl): a play reaches only part of each function's paths, and a
+    // fight, an item or an event the profile never saw goes through a hot function into those
+    if (!hot.empty()) {
+        std::unordered_set<uint32_t> entries(prog.entries.begin(), prog.entries.end()), callees;
+        for (uint32_t f : hot) {
+            if (!entries.count(f)) continue;
+            for (uint32_t a = f, end = prog.funcEnd(f); a < end; a += 4) {
+                const uint32_t w = prog.word(a);
+                if ((w >> 26) != 18 || (w & 3) != 1) continue;  // bl
+                const uint32_t t = a + (uint32_t)(((int32_t)(w << 6)) >> 6 & ~3);
+                if (entries.count(t)) callees.insert(t);
+            }
+        }
+        hot.insert(callees.begin(), callees.end());
+    }
     std::vector<std::vector<uint32_t>> modules;
-    for (size_t i = 0; i < prog.entries.size(); i += opt.perModule)
-        modules.emplace_back(prog.entries.begin() + i, prog.entries.begin() + std::min(prog.entries.size(), i + opt.perModule));
+    std::vector<bool> coldModule;
+    {
+        std::vector<uint32_t> hotFns, coldFns;
+        for (uint32_t e : prog.entries) (hot.empty() || hot.count(e) ? hotFns : coldFns).push_back(e);
+        auto split = [&](const std::vector<uint32_t>& fns, size_t per, bool cold) {
+            for (size_t i = 0; i < fns.size(); i += per) {
+                modules.emplace_back(fns.begin() + i, fns.begin() + std::min(fns.size(), i + per));
+                coldModule.push_back(cold);
+            }
+        };
+        split(hotFns, opt.perModule, false);
+        split(coldFns, opt.perModule, true);
+        res.coldFunctions = coldFns.size();
+    }
     llvm::sys::fs::create_directories(opt.outDir);
     if (opt.modulesTotal) *opt.modulesTotal = modules.size();
     std::atomic<size_t> next{0}, instructions{0}, unhandled{0}, localized{0}, localFallback{0};
@@ -101,6 +149,8 @@ bool compile_game(const CompileOptions& opt, CompileResult& res, std::string& er
     };
     auto worker = [&] {
         for (size_t i; !failed && (i = next++) < modules.size();) {
+            const bool cold = coldModule[i];
+            const int level = cold ? opt.coldOptLevel : opt.optLevel;
             if (opt.cancel && *opt.cancel) return fail("cancelled");
             llvm::LLVMContext ctx;
             EmitStats st;
@@ -111,14 +161,28 @@ bool compile_game(const CompileOptions& opt, CompileResult& res, std::string& er
                 if (opt.modulesDone) ++*opt.modulesDone;
                 continue;
             }
+            // WWHD_RECOMPILE_TIMES=1: the time of each step (emit, ops inlined, registers in locals, optimization, code)
+            static const bool times = getenv("WWHD_RECOMPILE_TIMES") != nullptr;
+            auto tp = std::chrono::steady_clock::now();
+            double ms[5] = {};
+            auto phase = [&](int k) {
+                auto now = std::chrono::steady_clock::now();
+                ms[k] = std::chrono::duration<double, std::milli>(now - tp).count();
+                tp = now;
+                if (times && k == 4)
+                    fprintf(stderr, "[recomp] %s: emit %.0f, inline %.0f, locals %.0f, optimize %.0f, codegen %.0f ms\n", name, ms[0], ms[1], ms[2], ms[3], ms[4]);
+            };
             auto m = emit_module(ctx, prog, hooks, modules[i], opt.opsBitcode, name, st, e);
             if (!m) return fail(std::string(name) + ": " + e);
+            phase(0);
             m->setTargetTriple(triple);
             llvm::TargetOptions to;
             to.AllowFPOpFusion = llvm::FPOpFusion::Strict;  // exact FP: no contraction into FMA
             std::unique_ptr<llvm::TargetMachine> tm(target->createTargetMachine(
                 triple, cpu, features, to, llvm::Reloc::PIC_, std::nullopt,
-                opt.optLevel >= 3 ? llvm::CodeGenOptLevel::Aggressive : llvm::CodeGenOptLevel::Default));
+                level >= 3 ? llvm::CodeGenOptLevel::Aggressive : level == 2 ? llvm::CodeGenOptLevel::Default
+                           : level == 1 ? llvm::CodeGenOptLevel::Less : llvm::CodeGenOptLevel::None));
+            // (cold levels: 0 SROA + EarlyCSE + SimplifyCFG, -1 SROA alone; the fast code generator)
             m->setDataLayout(tm->createDataLayout());
             for (llvm::Function& f : *m) {
                 if (f.isDeclaration()) continue;
@@ -147,11 +211,29 @@ bool compile_game(const CompileOptions& opt, CompileResult& res, std::string& er
                 mpm.addPass(llvm::createModuleToFunctionPassAdaptor(llvm::InstSimplifyPass()));
                 mpm.run(*m, mam);
             }
+            phase(1);
             LocalsStats ls;
             localize_registers(*m, locals_options(), ls);
+            phase(2);
             localized += ls.functions;
             localFallback += ls.fallback;
-            pb.buildPerModuleDefaultPipeline(opt.optLevel >= 3 ? llvm::OptimizationLevel::O3 : llvm::OptimizationLevel::O2).run(*m, mam);
+            if (level <= 0) {
+                // cold code: the register copy into SSA values (it lives on the stack otherwise: every
+                // register access a load or store), redundancies and empty blocks gone; nothing else
+                llvm::ModulePassManager mpm;
+                llvm::FunctionPassManager fpm;
+                fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
+                if (level == 0) {
+                    fpm.addPass(llvm::EarlyCSEPass());
+                    fpm.addPass(llvm::SimplifyCFGPass());
+                }
+                mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
+                mpm.run(*m, mam);
+            } else {
+                pb.buildPerModuleDefaultPipeline(level >= 3 ? llvm::OptimizationLevel::O3 : level == 2 ? llvm::OptimizationLevel::O2
+                                                                                                       : llvm::OptimizationLevel::O1).run(*m, mam);
+            }
+            phase(3);
             std::string path = opt.outDir + "/" + name + ".o", tmp = path + ".part";
             {
                 std::error_code ec;
@@ -161,6 +243,7 @@ bool compile_game(const CompileOptions& opt, CompileResult& res, std::string& er
                     return fail(std::string("cannot write ") + path);
                 cg.run(*m);
             }
+            phase(4);
             if (llvm::sys::fs::rename(tmp, path)) return fail(std::string("cannot write ") + path);
             instructions += st.instructions;
             unhandled += st.unhandled;

@@ -21,6 +21,10 @@ struct CompileOptions {
     size_t perModule = 1500;  // guest functions per module (and object file)
     int optLevel = kDefaultOptLevel;  // LLVM -O2 or -O3
     unsigned jobs = 0;        // parallel modules (0: hardware threads)
+    // the functions a play through the game reaches (tools/recomp/hot_functions.txt: hex entry addresses,
+    // one per line; "" = all): compiled at optLevel, the others at coldOptLevel in modules of their own
+    std::string hotList;
+    int coldOptLevel = 0;  // compile.cpp: 0 SROA + EarlyCSE + SimplifyCFG and the fast code generator
     bool keepExisting = false;  // resume: modules whose object file exists aren't compiled again
     std::atomic<size_t>* modulesDone = nullptr;   // progress (optional)
     std::atomic<size_t>* modulesTotal = nullptr;  // set once the executable is analyzed
@@ -29,7 +33,8 @@ struct CompileOptions {
 
 struct CompileResult {
     size_t functions = 0, modules = 0, instructions = 0, unhandled = 0;
-    size_t localized = 0, localFallback = 0;  // functions with registers in locals, and those kept in the struct
+    size_t localized = 0, localFallback = 0;
+    size_t coldFunctions = 0;  // compiled at coldOptLevel  // functions with registers in locals, and those kept in the struct
     double seconds = 0;
 };
 

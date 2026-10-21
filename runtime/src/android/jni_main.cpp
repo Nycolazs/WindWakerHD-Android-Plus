@@ -5,10 +5,14 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -284,6 +288,7 @@ JNI_FN(jbyteArray, parseKey)(JNIEnv* env, jclass, jbyteArray data) {
 #include "../recomp/compile.h"
 #include "../recomp/locals.h"
 extern "C" const char wwhd_ops_bc[], wwhd_ops_bc_end[], wwhd_hooks[], wwhd_hooks_end[];  // recomp_data.S
+extern "C" const char wwhd_hot_functions[], wwhd_hot_functions_end[];
 
 #ifdef WWHD_DEVICE_RECOMP
 #include "../recomp/loader.h"
@@ -298,12 +303,32 @@ static std::string compile_code(const std::string& gameDir, const std::string& o
     opt.rpxPath = gameDir + "/code/cking.rpx";
     opt.opsBitcode.assign(wwhd_ops_bc, wwhd_ops_bc_end);
     opt.hooksText.assign(wwhd_hooks, wwhd_hooks_end);
+    opt.hotList.assign(wwhd_hot_functions, wwhd_hot_functions_end);  // (part of the code cache key, loader.cpp)
+    if (const char* h = getenv("WWHD_RECOMPILE_HOT")) {  // testing: another list (not in the key: clear the code cache)
+        std::ifstream f(h);
+        std::stringstream ss;
+        ss << f.rdbuf();
+        opt.hotList = ss.str();
+    }
+    if (const char* c = getenv("WWHD_RECOMPILE_COLD_OPT")) opt.coldOptLevel = atoi(c);
     opt.outDir = outDir;
     opt.keepExisting = resume;
-    // about 500 MB per job; more than 4 barely help on big.LITTLE CPUs
+    // about 500 MB per job at most; 4 is the fastest on 8-core big.LITTLE phones (Galaxy S20 FE: 442 s
+    // with 3, 363 s with 4, 471 s with 6, the phone at its thermal limit), and fewer when memory is short
+    // (what Android reports available now, not the total: a 6 GB phone used to get only 3)
     struct sysinfo si;
     unsigned long long ram = sysinfo(&si) == 0 ? (unsigned long long)si.totalram * si.mem_unit : 0;
-    opt.jobs = ram >= (7ull << 30) ? 4 : ram >= (5ull << 30) ? 3 : 2;
+    unsigned long long avail = 0;
+    if (FILE* f = fopen("/proc/meminfo", "r")) {
+        char line[128];
+        while (fgets(line, sizeof line, f))
+            if (sscanf(line, "MemAvailable: %llu kB", &avail) == 1) break;
+        fclose(f);
+        avail <<= 10;
+    }
+    if (!avail) avail = ram / 2;
+    const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
+    opt.jobs = (unsigned)std::clamp<long long>(((long long)avail - (400ll << 20)) / (500ll << 20), 2, std::min(4u, std::max(2u, cores / 2)));
     if (const char* j = getenv("WWHD_RECOMPILE_JOBS")) opt.jobs = (unsigned)atoi(j);
     if (const char* o = getenv("WWHD_RECOMPILE_OPT")) opt.optLevel = atoi(o);  // testing
     g_compile_done = 0;
@@ -330,9 +355,9 @@ static std::string compile_code(const std::string& gameDir, const std::string& o
     progress.join();
     struct rusage ru;
     getrusage(RUSAGE_SELF, &ru);
-    LOG("[recomp] %s: %zu functions, %zu modules, %zu instructions in %.1f s, peak memory %ld MB; registers in locals: %zu "
-        "functions, %zu kept in the struct (%s)%s%s", ok ? "done" : "FAILED", res.functions, res.modules, res.instructions, res.seconds,
-        ru.ru_maxrss / 1024, res.localized, res.localFallback, recomp::code_switches().c_str(), ok ? "" : ": ", ok ? "" : err.c_str());
+    LOG("[recomp] %s: %zu functions (%zu cold), %zu modules, %zu instructions in %.1f s, peak memory %ld MB; registers in locals: %zu "
+        "functions, %zu kept in the struct (%s)%s%s", ok ? "done" : "FAILED", res.functions, res.coldFunctions, res.modules, res.instructions,
+        res.seconds, ru.ru_maxrss / 1024, res.localized, res.localFallback, recomp::code_switches().c_str(), ok ? "" : ": ", ok ? "" : err.c_str());
     return ok ? "" : err.empty() ? "failed" : err;
 }
 #endif
@@ -374,14 +399,16 @@ JNI_FN(jboolean, buildsGameCode)(JNIEnv*, jclass) { return false; }
 #endif
 
 // boots the runtime and starts the game (once per process)
-// a mod folder whose content/ files replace the game's (before start; "" = none)
+// mod folders whose content/ files replace the game's, one per line (before start; "" = none)
 JNI_FN(void, setContentOverlay)(JNIEnv* env, jclass, jstring dir) {
     config::content_overlay = jstr(env, dir);
     if (!config::content_overlay.empty()) LOG("[mods] content overlay %s", config::content_overlay.c_str());
 }
 
+void coverage_init();  // trace.cpp (WWHD_COVERAGE)
 JNI_FN(void, start)(JNIEnv* env, jclass, jstring gameDir, jstring saveDir, jstring cacheDir, jstring workDir) {
     if (g_started.exchange(true)) return;
+    coverage_init();
 #ifdef WWHD_RECOMP
     if (getenv("WWHD_RECOMPILE_TEST")) {
         // measuring the first-start compile instead of starting the game

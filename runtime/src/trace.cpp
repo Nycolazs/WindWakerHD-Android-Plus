@@ -5,7 +5,12 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <mutex>
+#include <string>
+#include <thread>
 #include <vector>
 
 #include "runtime.h"
@@ -35,7 +40,61 @@ static uint32_t g_watch_r3 = 0;
 static std::atomic<int> g_watch_r3_count{0};
 
 void true60_nan_probe(uint32_t addr);  // true60.cpp (WWHD_NAN_PROBE)
+// WWHD_COVERAGE=<file>: every game function entered is noted (one bit per instruction address) and
+// the list of their addresses written to <file> every 20 s, merged with what it already holds. For
+// tools/recomp/hot_functions.txt: the functions the play reaches, compiled fully on the phone, the
+// rest at a lower level (runtime/src/recomp/compile.cpp)
+namespace {
+constexpr uint32_t kCovBase = 0x02000000, kCovSize = 0x01000000;
+std::atomic<uint8_t>* g_cov = nullptr;
+std::string g_cov_path;
+
+void coverage_write() {
+    std::vector<uint8_t> seen(kCovSize / 4 / 8);
+    if (FILE* f = fopen(g_cov_path.c_str(), "r")) {
+        char line[64];
+        while (fgets(line, sizeof line, f)) {
+            uint32_t a = (uint32_t)strtoul(line, nullptr, 16);
+            if (a >= kCovBase && a < kCovBase + kCovSize) seen[(a - kCovBase) / 32] |= 1 << ((a - kCovBase) / 4 % 8);
+        }
+        fclose(f);
+    }
+    size_t n = 0;
+    for (size_t i = 0; i < seen.size(); i++) seen[i] |= g_cov[i].load(std::memory_order_relaxed);
+    std::string tmp = g_cov_path + ".tmp";
+    FILE* f = fopen(tmp.c_str(), "w");
+    if (!f) return;
+    for (size_t i = 0; i < seen.size(); i++)
+        for (int b = 0; b < 8; b++)
+            if (seen[i] >> b & 1) {
+                fprintf(f, "%08X\n", kCovBase + (uint32_t)(i * 8 + b) * 4);
+                n++;
+            }
+    fclose(f);
+    rename(tmp.c_str(), g_cov_path.c_str());
+    log_msg("[coverage] %zu functions in %s", n, g_cov_path.c_str());
+}
+}  // namespace
+
+void coverage_init() {
+    const char* p = getenv("WWHD_COVERAGE");
+    if (!p || !*p || g_cov) return;
+    g_cov_path = p;
+    g_cov = new std::atomic<uint8_t>[kCovSize / 4 / 8]();
+    g_ppc_trace = 1;
+    std::thread([] {
+        for (;;) {
+            std::this_thread::sleep_for(std::chrono::seconds(20));
+            coverage_write();
+        }
+    }).detach();
+}
+
 extern "C" void ppc_trace_enter(uint32_t addr) {
+    if (g_cov && addr - kCovBase < kCovSize) {
+        const uint32_t i = (addr - kCovBase) / 4;
+        if (!(g_cov[i / 8].load(std::memory_order_relaxed) >> (i % 8) & 1)) g_cov[i / 8].fetch_or((uint8_t)(1 << (i % 8)), std::memory_order_relaxed);
+    }
     static const bool nan_probe = getenv("WWHD_NAN_PROBE") != nullptr;
     if (nan_probe) true60_nan_probe(addr);
     if (g_watch_r3) {
