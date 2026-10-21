@@ -432,7 +432,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             String terr = Translation.installBuiltIn(this, ptbrDir(), new File(gameDir()));
             if (terr != null) Log.w(TAG, "translation: " + terr);
         }
-        Native.setContentOverlay(contentOverlay());
+        Native.setContentOverlay(ContentPacks.joinOverlays(ContentPacks.overlays(this, baseDir(), prefs), contentOverlay()));
         Native.start(gameDir(), new File(base, "save").getAbsolutePath(),
                 new File(getNoBackupFilesDir(), "shadercache").getAbsolutePath(), base.getAbsolutePath());
         started = true;
@@ -2201,7 +2201,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     // the menus' size, on top of fitting them to the screen (GameUi.fitted)
     static final float[] MENU_SIZES = {0.7f, 0.8f, 0.9f, 1f, 1.15f, 1.3f};
 
-    static final int PICK_EXPORT = 2, PICK_IMPORT = 3, PICK_DISC = 4, PICK_TRANSLATION = 5;
+    static final int PICK_EXPORT = 2, PICK_IMPORT = 3, PICK_DISC = 4, PICK_TRANSLATION = 5, PICK_PACK = 11;
     private boolean exportSave = true, exportStates = true;
 
     void chooseExport() {
@@ -2328,6 +2328,17 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         if (request == PICK_DRIVER) {
             if (result == RESULT_OK && data != null && data.getData() != null) installDriver(data.getData());
             else driverPickDone();  // cancelled: continue (the start after a GPU hang)
+            return;
+        }
+        if (request == PICK_PACK && result == RESULT_OK && data != null && data.getData() != null) {
+            android.net.Uri tree = data.getData();
+            withProgress(R.string.packs_installing, () -> ContentPacks.install(this, tree, baseDir()), err -> {
+                if (err != null) {
+                    new GameDialog(this).title(R.string.opt_packs).message(getString(R.string.packs_failed, err)).button(R.string.opt_ok, null).show();
+                    return;
+                }
+                askRestart(R.string.opt_packs);
+            });
             return;
         }
         if (request == PICK_TRANSLATION && result == RESULT_OK && data != null && data.getData() != null) {

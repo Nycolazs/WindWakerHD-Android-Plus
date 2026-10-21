@@ -613,6 +613,28 @@ final class OptionsMenu extends Dialog {
             submenu(R.string.opt_capture, R.string.opt_capture_hint, "", () -> Native.setOption("capture", 1));
     }
 
+    // content packs: Cemu graphic packs whose content/ files replace the game's (ContentPacks.java)
+    private void packsPage() {
+        pageTitle(R.string.opt_packs);
+        note(a.getString(R.string.packs_about, ContentPacks.sharedDir().getAbsolutePath()));
+        for (ContentPacks.Pack p : ContentPacks.list(a, a.baseDir())) {
+            toggleText(p.name, null, ContentPacks.enabled(a.prefs, p), on -> {
+                ContentPacks.setEnabled(a.prefs, p, on);
+                a.askRestart(R.string.opt_packs);
+            });
+            if (ContentPacks.removable(a.baseDir(), p))
+                submenuText(a.getString(R.string.packs_remove, p.name), () -> new GameDialog(getContext()).title(R.string.opt_packs)
+                        .message(a.getString(R.string.packs_remove, p.name) + "?")
+                        .button(R.string.opt_cancel, null)
+                        .button(R.string.opt_ok, () -> {
+                            ContentPacks.remove(a.baseDir(), p);
+                            fill();
+                            a.askRestart(R.string.opt_packs);
+                        }).show());
+        }
+        submenu(R.string.packs_install, R.string.packs_install_hint, "", () -> a.pickFolder(MainActivity.PICK_PACK));
+    }
+
     // the Brazilian Portuguese fan translation (Translation.java)
     private void ptbrPage() {
         pageTitle(R.string.opt_ptbr);
@@ -743,6 +765,8 @@ final class OptionsMenu extends Dialog {
     private void mods() {
         submenu(R.string.opt_ptbr, R.string.opt_ptbr_hint, a.ptbrInstalled() ? a.getString(a.ptbrEnabled() ? R.string.opt_on : R.string.opt_off)
                 : a.getString(R.string.ptbr_not_installed), () -> openPage(this::ptbrPage));
+        submenu(R.string.opt_packs, R.string.opt_packs_hint, String.valueOf(ContentPacks.overlays(a, a.baseDir(), a.prefs).size()),
+                () -> openPage(this::packsPage));
         submenu(R.string.opt_cheats, R.string.opt_cheats_hint, "", () -> openPage(this::cheatsPage));
         choice(R.string.opt_button_style, R.string.opt_button_style_hint, a.getResources().getStringArray(R.array.button_styles),
                a.buttonStyle(), a::setButtonStyle);
@@ -962,6 +986,12 @@ final class OptionsMenu extends Dialog {
             if (code == KeyEvent.KEYCODE_DPAD_RIGHT) { inc.run(); return true; }
             return false;
         });
+    }
+
+    private void submenuText(String label, Runnable open) {
+        LinearLayout r = rowText(label, null);
+        r.addView(arrow("›"), new LinearLayout.LayoutParams(-2, -2));
+        r.setOnClickListener(x -> open.run());
     }
 
     private void submenu(int label, int hint, String value, Runnable open) {

@@ -85,14 +85,28 @@ std::string case_insensitive(const std::string& root, const std::string& path) {
 std::string host_path(const std::string& guest) {
     std::string r = host_path_exact(guest);
     const std::string& g = config::game_dir;
-    // a mod's replacement for a game data file (the Portuguese translation's message packs):
-    // <overlay>/content/... instead of <game>/content/..., when the mod has that file
-    const std::string& o = config::content_overlay;
+    // a mod's replacement for a game data file (content packs, the translation's message packs):
+    // <overlay>/content/... instead of <game>/content/..., from the first overlay that has the file
+    // (config::content_overlay: their folders, one per line)
     const std::string gc = g + "/content/";
-    if (!o.empty() && r.compare(0, gc.size(), gc) == 0) {
-        std::string alt = case_insensitive(o, o + "/content/" + r.substr(gc.size()));
-        struct stat st;
-        if (stat(alt.c_str(), &st) == 0 && S_ISREG(st.st_mode)) return alt;
+    if (!config::content_overlay.empty() && r.compare(0, gc.size(), gc) == 0) {
+        // (set before the game starts)
+        static const std::vector<std::string> overlays = [] {
+            std::vector<std::string> v;
+            const std::string& all = config::content_overlay;
+            for (size_t a = 0; a < all.size();) {
+                size_t b = all.find('\n', a);
+                if (b == std::string::npos) b = all.size();
+                if (b > a) v.push_back(all.substr(a, b - a));
+                a = b + 1;
+            }
+            return v;
+        }();
+        for (const std::string& o : overlays) {
+            std::string alt = case_insensitive(o, o + "/content/" + r.substr(gc.size()));
+            struct stat st;
+            if (stat(alt.c_str(), &st) == 0 && S_ISREG(st.st_mode)) return alt;
+        }
     }
     if (r.compare(0, g.size(), g) == 0 && guest.compare(0, 9, "/vol/save") != 0) return case_insensitive(g, r);
     return r;

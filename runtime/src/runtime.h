@@ -152,7 +152,7 @@ void log_msg(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 // ---- configuration ----
 namespace config {
 extern std::string game_dir;   // extracted game root (contains code/, content/, meta/)
-extern std::string content_overlay;  // a mod's folder whose content/ files replace the game's ("" = none)
+extern std::string content_overlay;  // mod folders whose content/ files replace the game's, one per line, the first winning ("" = none)
 extern std::string save_dir;   // host directory for save data
 extern std::string cache_dir;  // host directory for shader caches ("" = platform default)
 extern std::string code_dir;   // game code compiled on the device (WWHD_DEVICE_RECOMP builds)

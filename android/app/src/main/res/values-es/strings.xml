@@ -523,4 +523,13 @@
         <item>Calidad</item>
         <item>Ligeros</item>
     </string-array>
+    <string name="opt_packs">Paquetes de contenido (mods de Cemu)</string>
+    <string name="opt_packs_hint">Graphic packs de Cemu que reemplazan archivos del juego: modelos, texturas, textos</string>
+    <string name="packs_about">Un paquete de contenido es un graphic pack de Cemu con una carpeta content (el mod de Linkle, paquetes de texturas, traducciones): sus archivos se leen en lugar de los del juego. Los parches de código de Cemu no se pueden aplicar al juego recompilado y se omiten. Instala uno desde una carpeta abajo o (con Acceso a todos los archivos) copia su carpeta a %1$s. Los paquetes más arriba en la lista tienen prioridad. El juego se reinicia para aplicar los cambios.</string>
+    <string name="packs_install">Instalar un paquete desde una carpeta…</string>
+    <string name="packs_install_hint">La carpeta de un graphic pack de Cemu descomprimido</string>
+    <string name="packs_installing">Instalando el paquete de contenido…</string>
+    <string name="packs_failed">No se pudo instalar el paquete: %1$s</string>
+    <string name="packs_not_found">No hay carpeta content en ese paquete (solo funcionan los paquetes de contenido de Cemu, no los parches de código).</string>
+    <string name="packs_remove">Quitar %1$s</string>
 </resources>

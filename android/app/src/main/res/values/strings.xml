@@ -523,4 +523,13 @@
         <item>Quality</item>
         <item>Light</item>
     </string-array>
+    <string name="opt_packs">Content packs (Cemu mods)</string>
+    <string name="opt_packs_hint">Cemu graphic packs that replace the game\'s files: models, textures, text</string>
+    <string name="packs_about">A content pack is a Cemu graphic pack with a content folder (the Linkle mod, texture packs, translations): its files are read instead of the game\'s. Cemu\'s code patches can\'t be applied to the recompiled game and are left out. Install one from a folder below, or (with All files access) copy its folder into %1$s. Packs higher in the list win. The game restarts to apply changes.</string>
+    <string name="packs_install">Install a pack from a folder…</string>
+    <string name="packs_install_hint">The folder of an unpacked Cemu graphic pack</string>
+    <string name="packs_installing">Installing the content pack…</string>
+    <string name="packs_failed">The pack couldn\'t be installed: %1$s</string>
+    <string name="packs_not_found">No content folder in that pack (only Cemu\'s content packs are supported, not code patches).</string>
+    <string name="packs_remove">Remove %1$s</string>
 </resources>
