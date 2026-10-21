@@ -1350,11 +1350,16 @@ void true60_nan_probe(uint32_t addr) {
 
 // The HUD (d_meter) updates its state from the play scene's draw (02593B10, the per-step part of
 // the meter: button labels, gauges, the magic gauge sparkle with its random numbers), so at 60 fps
-// it stepped twice per logic step. With true 60 the update runs on full passes only (half passes
-// still draw it): HUD timing and its use of the shared random numbers are those of the 30 fps game.
+// it stepped on in-between passes as well (twice per logic step at 60 and 120 fps). The update runs
+// on full passes only, with frame interpolation as with true 60 (in-between passes still draw it):
+// HUD timing and its use of the shared random numbers are those of the 30 fps game. Its sounds depend
+// on this too: the Pirate's Charm ring while Tetra calls (JA_SE_ITM_OMAMORI_BLINK) starts from here
+// every 20 updates of the A-button counter. Sound starts on in-between passes are dropped
+// (interp.cpp), and with two updates per step every 20th update fell on an in-between pass, so with
+// 60/120 fps the charm shook without its ring (issue #262).
 extern "C" void f_02593B10_orig(Cpu* c);
 extern "C" void hook_02593B10(Cpu* c) {
     static const bool every = getenv("WWHD_HUD_EVERY_PASS") != nullptr;  // debug: old behaviour
-    if (enabled() && half_pass() && !every) return;
+    if (half_pass() && !every) return;
     f_02593B10_orig(c);
 }
