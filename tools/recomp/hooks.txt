@@ -45,6 +45,7 @@
 # sound listener updates from camera_draw: only the exact camera may move the listener
 025E1B44  # mDoAud_getCameraInfo -> JAIZelBasic::getCameraInfo (listener position/orientation)
 02027754  # JAIZelBasic::setCameraPolygonPos (ground point under the camera)
+021C4BB4  # Sploosh Kaboom board draw: cell identity for pooled hit/miss model histories
 027F55FC  # J3DModel::viewCalc: model matrices blended on logic passes
 027F5018  # J3DModel UBO update (update_ubo thread): halfway matrices on logic passes
 020315CC  # audio frame callback (calls JAIZelBasic::gframeProcess): once per logic step while interpolating

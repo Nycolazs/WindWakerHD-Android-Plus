@@ -38,6 +38,7 @@
 #include "interp_joints.h"
 #include "interp_nodraw.h"
 #include "interp_pacing.h"
+#include "interp_sploosh.h"
 #include "guest_addr.h"
 #include <ctime>
 #include "platform.h"
@@ -546,7 +547,10 @@ namespace {
 constexpr uint32_t kMdlJoints = 0x2C, kJntMtx = 0x10, kJntNum = 0x2C;
 constexpr int kMaxJoints = 1024;
 
+const SplooshMarkers* g_sploosh_markers = nullptr;  // scoped to the board draw, main thread only
+
 struct ModelPrev {
+    uint8_t marker_cell = 0;  // Sploosh Kaboom: the board cell a pooled marker model stands for (interp_sploosh.h)
     uint32_t mtx = 0;
     uint64_t pass = 0;  // hold pass it was recorded on
     std::vector<uint32_t> w;  // raw guest words, 12 per matrix
@@ -584,11 +588,20 @@ uint32_t fw(float f) { return __builtin_bswap32(f32_as_u32(f)); }
 // WWHD_INTERP_MODEL_TRACE_JOINTS joints, default 40): root joint translation as drawn
 // _ALL=1 follows every eligible model; _START=n starts at logic step n. _FILE=path
 // also writes CSV: step,t,decision,joint-block,joint-count,joint-index,12 matrix floats.
+// _SPLOOSH=1 restricts it to the Sploosh Kaboom board markers (use _JOINTS=1).
 void trace_model(const char* what, uint32_t jnt, uint32_t n, const uint32_t* w) {
     static int left = getenv("WWHD_INTERP_MODEL_TRACE") ? atoi(getenv("WWHD_INTERP_MODEL_TRACE")) : 0;
     static const uint32_t min_joints = getenv("WWHD_INTERP_MODEL_TRACE_JOINTS") ? atoi(getenv("WWHD_INTERP_MODEL_TRACE_JOINTS")) : 40;
     static const bool all = getenv("WWHD_INTERP_MODEL_TRACE_ALL") != nullptr;
     static const uint64_t start = getenv("WWHD_INTERP_MODEL_TRACE_START") ? strtoull(getenv("WWHD_INTERP_MODEL_TRACE_START"), nullptr, 10) : 0;
+    static const bool sploosh = getenv("WWHD_INTERP_MODEL_TRACE_SPLOOSH") != nullptr;
+    if (sploosh) {
+        bool marker = false;
+        if (g_sploosh_markers)
+            for (const auto& m : *g_sploosh_markers)
+                if (m.model && ld32(m.model + kMdlJoints) == jnt) { marker = true; break; }
+        if (!marker) return;
+    }
     static uint32_t which = 0;
     if (left <= 0 || g_logic_steps < start || n < min_joints || (!all && which && which != jnt)) return;
     which = jnt;
@@ -673,6 +686,26 @@ void blend_mtx(const float* a, const float* b, float* out, float t) {
 void blend_world_matrix(const float* a, const float* b, float* out, float t) { blend_mtx(a, b, out, t); }
 }  // namespace interp
 
+// The Sploosh Kaboom board assigns its pooled J3D hit/miss models by scanning cells at +0x598
+// (021C4F34), so an earlier cell inserted by a shot shifts later assignments and a marker model
+// jumped (blended) from its old cell to its new one after a shot. That cell identity is carried into
+// the matrix history; the board, cursor, ships and models whose assignment stayed the same keep the
+// normal blending. From the original project (850b5435).
+extern "C" void f_021C4BB4_orig(Cpu* c);
+extern "C" void hook_021C4BB4(Cpu* c) {
+    using namespace interp;
+    if (!enabled()) { f_021C4BB4_orig(c); return; }
+    const uint32_t board = c->r[3];
+    const auto cells = sploosh_marker_cells(static_cast<const uint8_t*>(ppc_ptr(board + 0x598)));
+    SplooshMarkers markers{};
+    for (unsigned i = 0; i < markers.size(); ++i)
+        if (cells[i]) markers[i] = {ld32(board + 0x3BC + 4 * i), cells[i]};
+    const auto* previous = g_sploosh_markers;
+    g_sploosh_markers = &markers;
+    f_021C4BB4_orig(c);
+    g_sploosh_markers = previous;
+}
+
 // J3DModel::viewCalc(J3DModel*)
 extern "C" void hook_027F55FC(Cpu* c) {
     using namespace interp;
@@ -683,6 +716,7 @@ extern "C" void hook_027F55FC(Cpu* c) {
     }
     const bool record = record_pass();
     uint32_t model = c->r[3];
+    const uint8_t marker_cell = sploosh_marker_cell(g_sploosh_markers, model);
     uint32_t jnt = ld32(model + kMdlJoints);
     uint32_t mtx = jnt ? ld32(jnt + kJntMtx) : 0;
     uint32_t n = jnt ? ld16(jnt + kJntNum) : 0;
@@ -704,6 +738,7 @@ extern "C" void hook_027F55FC(Cpu* c) {
             for (uint32_t j = 0; layout && j < n; j++)
                 p.stale[j] = joints::stale(joint_hidden(data, j), exact + 12 * j, before ? p.w.data() + 12 * j : nullptr);
         }
+        p.marker_cell = marker_cell;
         p.mtx = mtx;
         p.pass = g_model_pass;
         p.w.assign(exact, exact + words);
@@ -729,6 +764,12 @@ extern "C" void hook_027F55FC(Cpu* c) {
         it->second.pass + 1 < g_model_pass) {  // new model, or not drawn on the last recording pass
         g_mstats.fresh++;
         trace_model("new", jnt, n, cur);
+        f_027F55FC_orig(c);
+        return;
+    }
+    if (it->second.marker_cell != marker_cell) {  // a pooled Sploosh Kaboom marker now stands for another cell
+        g_mstats.fresh++;
+        trace_model("reassigned", jnt, n, cur);
         f_027F55FC_orig(c);
         return;
     }
