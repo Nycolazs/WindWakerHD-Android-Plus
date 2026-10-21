@@ -1448,6 +1448,10 @@ void service(Cpu* c) {
         }
         g_loading = false;
         g_attempts = 0;
+        // a slot without its picture (an autosave of an older version, or one written as Android closed
+        // the app): the picture is taken once the game has drawn the loaded place again
+        struct stat st;
+        if (stat(slot_path(s->slot, "png").c_str(), &st) != 0) gfx::request_tv_dump(slot_path(s->slot, "png"), 15);
         for (int k = 1; k <= dump; k++)
             gfx::request_tv_dump("state_load" + std::to_string(s->slot) + "_" + std::to_string(k) + ".png", k);
     }
