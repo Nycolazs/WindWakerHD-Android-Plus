@@ -61,6 +61,7 @@
 #include "runtime.h"
 #include "platform.h"
 #include "input.h"
+#include "crash_info.h"
 #include "interp.h"
 #include "mem_writes.h"
 #include "mods/mods.h"
@@ -229,6 +230,14 @@ std::string g_message;
 std::chrono::steady_clock::time_point g_message_time;
 std::atomic<int> g_save_req{0};
 std::shared_ptr<Snapshot> g_load_ready;   // decompressed, waiting for the frame boundary
+// A state loads only where every game thread waits where it waited when it was saved (their host call
+// stacks can't be saved: the game code runs natively), which is true while a file is being played but
+// not at the title or the file select (other threads run there). A load asked for there goes into the
+// game first, by itself: A is held in pulses (title, controller choice, the last file played) until a
+// file is being played, then the state loads as usual; the screen shows a notice meanwhile.
+bool g_entering = false;
+std::chrono::steady_clock::time_point g_entering_since;
+uint64_t g_play_frames = 0;  // frames a file has been played without a pause (since entering)
 std::atomic<bool> g_loading{false};       // a slot file is being read
 std::atomic<int> g_autosave_secs{0};      // autosave interval in seconds (0 = off)
 std::atomic<bool> g_autosave_now{false};  // the app is going to the background: an autosave first
@@ -1004,7 +1013,7 @@ bool check_allocs(Reader r, std::string& why) {
         if (i >= cur.size()) break;  // allocated later in the saved session: beyond our top
         const mem::AllocRec& b = cur[i];
         // (the allocating code address, a.tag, changes with every rebuild: only logged)
-        if (a.tag != b.tag && i < 4) LOG("[savestate] runtime object #%u allocated by different code (rebuilt?)", i);
+        if (a.tag != b.tag && i < 4 && g_attempts == 0) LOG("[savestate] runtime object #%u allocated by different code (rebuilt?)", i);
         if (a.addr != b.addr || a.size != b.size) {
             char buf[160];
             snprintf(buf, sizeof buf, "runtime objects are laid out differently (#%u: %08X+%X vs %08X+%X)", i, a.addr, a.size, b.addr,
@@ -1188,13 +1197,30 @@ bool do_save(int slot) {
     return true;
 }
 
+// a load the title or the file select refused: into the game first (g_entering); false if a file is
+// already being played (nowhere else to go) or this is that second try
+bool start_entering(int slot) {
+    if (g_entering || mods::save_loaded(mods::save_addr())) return false;
+    g_entering = true;
+    g_entering_since = std::chrono::steady_clock::now();
+    g_play_frames = 0;
+    g_attempts = 0;
+    LOG("[savestate] slot %d: not loadable outside a played file: going into the game first", slot);
+    message("Loading slot %d: going into the game first...", slot);
+    return true;
+}
+
 bool do_load(const std::shared_ptr<Snapshot>& s) {
     std::string busy, why;
     auto t0 = std::chrono::steady_clock::now();
     threads_ss_targets(s->section(kSecThreads));
+    // (threads waiting somewhere else for a while, a file loading or an event: up to 10 s while a file is
+    // played, a frame each; a quiesce that times out costs up to 250 ms, so those keep the 30 tries)
+    const int tries = mods::save_loaded(mods::save_addr()) ? 300 : 30;
     if (!threads::quiesce(250, busy, 2, 0)) {
         threads::thaw();
         if (++g_attempts < 30) return false;
+        if (start_entering(s->slot)) return false;
         message("Slot %d: not loaded (game busy:%s)", s->slot, busy.c_str());
         return true;
     }
@@ -1210,10 +1236,11 @@ bool do_load(const std::shared_ptr<Snapshot>& s) {
     if (!ok) {
         threads::thaw();
         // threads at other waits right now may be where they were saved on a later frame
-        if (layout_ok && ++g_attempts < 30) {
+        if (layout_ok && ++g_attempts < tries) {
             if (g_attempts == 1) LOG("[savestate] slot %d: waiting for the game threads (%s)", s->slot, why.c_str());
             return false;
         }
+        if (start_entering(s->slot)) return false;
         message("Slot %d: cannot load here (%s)", s->slot, why.c_str());
         return true;
     }
@@ -1441,13 +1468,42 @@ void service(Cpu* c) {
         std::lock_guard<std::mutex> lk(g_mu);
         s = g_load_ready;
     }
+    if (s && g_entering) {
+        const bool inFile = mods::save_loaded(mods::save_addr());
+        g_play_frames = inFile && !interp::menu_open() ? g_play_frames + 1 : 0;
+        const bool late = std::chrono::steady_clock::now() - g_entering_since > std::chrono::seconds(120);
+        if (late) {
+            input::set_auto_buttons(0);
+            g_entering = false;
+            {
+                std::lock_guard<std::mutex> lk(g_mu);
+                g_load_ready.reset();
+            }
+            g_loading = false;
+            g_attempts = 0;
+            message("Slot %d: not loaded (the game could not be entered: start a file, then load it)", s->slot);
+            return;
+        }
+        if (!inFile) {  // A in pulses (pressed 4 frames of every 12): title, controller choice, file select
+            input::set_auto_buttons(gfx::frame_count() % 12 < 4 ? input::kA : 0);
+            return;
+        }
+        input::set_auto_buttons(0);
+        if (g_play_frames < 45) return;  // the place drawn and its threads settled
+    }
     if (s && do_load(s)) {
+        if (g_entering) {
+            g_entering = false;
+            input::set_auto_buttons(0);
+        }
         {
             std::lock_guard<std::mutex> lk(g_mu);
             g_load_ready.reset();
         }
         g_loading = false;
         g_attempts = 0;
+        crash_info::set("save state", "slot " + std::to_string(s->slot) + " loaded at game frame " + std::to_string(gfx::frame_count()) +
+                                          " (" + std::string(s->h.area) + ", saved " + std::to_string(s->h.created) + ")");
         // a slot without its picture (an autosave of an older version, or one written as Android closed
         // the app): the picture is taken once the game has drawn the loaded place again
         struct stat st;

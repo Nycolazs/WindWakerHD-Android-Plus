@@ -67,11 +67,14 @@ static std::atomic<bool> g_pro{getenv("WWHD_PRO_CONTROLLER") != nullptr};
 bool pro_controller() { return g_pro.load(std::memory_order_relaxed); }
 void set_pro_controller(bool on) { g_pro = on; LOG("[input] controls act as %s", on ? "Pro Controller" : "GamePad"); }
 
+static std::atomic<uint32_t> g_auto_buttons{0};
+void set_auto_buttons(uint32_t bits) { g_auto_buttons.store(bits, std::memory_order_relaxed); }
+
 PadState read(bool consume) {
     static const std::vector<Press> script = scripted();
     std::unique_lock<std::mutex> lk(g_mu);
     PadState s = g_pad;
-    s.buttons |= g_latched;
+    s.buttons |= g_latched | g_auto_buttons.load(std::memory_order_relaxed);
     if (consume) g_latched = 0;
     if (!script.empty()) {
         uint64_t frame = gfx::current_frame();

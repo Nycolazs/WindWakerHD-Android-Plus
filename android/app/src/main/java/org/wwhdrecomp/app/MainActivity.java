@@ -1727,21 +1727,27 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
 
     // the save or load happens at the next frame boundary: show its result when it's there
     void showStateResult() {
-        final String before = Native.saveStateMessage();
-        final long until = android.os.SystemClock.uptimeMillis() + 15000;
+        final String[] before = {Native.saveStateMessage()};
+        final long[] until = {android.os.SystemClock.uptimeMillis() + 15000};
         final android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
         h.postDelayed(new Runnable() {
             @Override
             public void run() {
                 String m = Native.saveStateMessage();
-                if (!m.isEmpty() && !m.equals(before)) {
+                if (m.startsWith("Loading slot") && !m.equals(before[0])) {
+                    // a load from the title or the file select goes into the game first: the result follows
+                    android.widget.Toast.makeText(MainActivity.this, m, android.widget.Toast.LENGTH_LONG).show();
+                    before[0] = m;
+                    until[0] = android.os.SystemClock.uptimeMillis() + 130000;
+                    h.postDelayed(this, 200);
+                } else if (!m.isEmpty() && !m.equals(before[0])) {
                     // a loaded state brings its controls along: keep the setting in step
                     prefs.edit().putBoolean("pro_controller", proControllerSetting()).apply();
                     // a saved state (and, a moment later, its picture) copied out of the app
                     autoBackup();
                     h.postDelayed(MainActivity.this::autoBackup, 3000);
                     android.widget.Toast.makeText(MainActivity.this, m, android.widget.Toast.LENGTH_SHORT).show();
-                } else if (android.os.SystemClock.uptimeMillis() < until) {
+                } else if (android.os.SystemClock.uptimeMillis() < until[0]) {
                     h.postDelayed(this, 200);
                 }
             }
