@@ -44,10 +44,19 @@ layout(set=0,binding=4) uniform sampler2D flowImg;   // objects' own movement pe
 layout(location=0) in vec2 uv;
 layout(location=0) out vec4 result;
 layout(push_constant) uniform P { vec4 r0; vec4 r1; vec4 r2; vec4 t; vec4 z; vec4 rect; vec4 a; } p;
+// the 2x2 depth texels around q, as textureGather would return them, read one by one: a gather on
+// the game's depth-stencil image froze an Adreno 650 (Galaxy S20 FE) until it restarted and gave
+// stray lines on others (LASRecomp-Android-Plus 08bbaef); plain fetches work on every driver
+vec4 gatherDepth(vec2 q) {
+ ivec2 sz = textureSize(depthImg, 0), b = ivec2(floor(q * vec2(sz) - 0.5));
+ ivec2 lo = ivec2(0), hi = sz - 1;
+ return vec4(texelFetch(depthImg, clamp(b + ivec2(0, 1), lo, hi), 0).r, texelFetch(depthImg, clamp(b + ivec2(1, 1), lo, hi), 0).r,
+             texelFetch(depthImg, clamp(b + ivec2(1, 0), lo, hi), 0).r, texelFetch(depthImg, clamp(b, lo, hi), 0).r);
+}
 // the nearest depth of the 2x2 pixels around q: the game's outlines around characters lie on the
 // background's depth and would otherwise move with the background (depth range [-1,1] as GX2)
 float viewDepth(vec2 q) {
- vec4 m = textureGather(depthImg, q);
+ vec4 m = gatherDepth(q);
  float d = min(min(m.x, m.y), min(m.z, m.w)), n = p.z.x, f = p.z.y;
  return 2.0 * n * f / max((f + n) - (d * 2.0 - 1.0) * (f - n), 1e-6);
 }
@@ -146,8 +155,17 @@ layout(push_constant) uniform P { vec4 r0; vec4 r1; vec4 r2; vec4 t; vec4 z; vec
 layout(location=0) out vec2 src;
 layout(location=1) out vec3 farSrc;  // src weighted by depth^4: a gap's triangle takes the far side
 layout(location=2) out vec4 dbg;     // WWHD_FRAMEGEN_DEBUG: the movement's kind
+// the 2x2 depth texels around q, as textureGather would return them, read one by one: a gather on
+// the game's depth-stencil image froze an Adreno 650 (Galaxy S20 FE) until it restarted and gave
+// stray lines on others (LASRecomp-Android-Plus 08bbaef); plain fetches work on every driver
+vec4 gatherDepth(vec2 q) {
+ ivec2 sz = textureSize(depthImg, 0), b = ivec2(floor(q * vec2(sz) - 0.5));
+ ivec2 lo = ivec2(0), hi = sz - 1;
+ return vec4(texelFetch(depthImg, clamp(b + ivec2(0, 1), lo, hi), 0).r, texelFetch(depthImg, clamp(b + ivec2(1, 1), lo, hi), 0).r,
+             texelFetch(depthImg, clamp(b + ivec2(1, 0), lo, hi), 0).r, texelFetch(depthImg, clamp(b, lo, hi), 0).r);
+}
 float viewDepth(vec2 q) {
- vec4 m = textureGather(depthImg, q);
+ vec4 m = gatherDepth(q);
  float d = min(min(m.x, m.y), min(m.z, m.w)), n = p.z.x, f = p.z.y;
  return 2.0 * n * f / max((f + n) - (d * 2.0 - 1.0) * (f - n), 1e-6);
 }
@@ -172,8 +190,9 @@ vec2 objectMove(vec2 q, float z, float fw) {
  return f.xy * 0.5 * (1.0 - fw);
 }
 void main() {
- int cols = int(p.rect.x), rows = int(p.rect.y);
- vec2 g = vec2(gl_VertexIndex % cols, gl_VertexIndex / cols) / vec2(cols - 1, rows - 1);
+ // (unsigned: a signed division by a variable is what some mobile shader compilers get wrong)
+ uint cols = uint(p.rect.x), rows = uint(p.rect.y), vi = uint(gl_VertexIndex);
+ vec2 g = vec2(vi % cols, vi / cols) / vec2(cols - 1u, rows - 1u);
  float m = p.rect.z;
  vec2 q = g * (1.0 + 2.0 * m) - m;
  vec2 qc = clamp(q, vec2(0.0), vec2(1.0));
@@ -256,8 +275,17 @@ layout(set=0,binding=4) uniform sampler2D flowImg;
 layout(location=0) in vec2 uv;
 layout(location=0) out vec4 result;
 layout(push_constant) uniform P { vec4 r0; vec4 r1; vec4 r2; vec4 t; vec4 z; vec4 rect; vec4 a; } p;
+// the 2x2 depth texels around q, as textureGather would return them, read one by one: a gather on
+// the game's depth-stencil image froze an Adreno 650 (Galaxy S20 FE) until it restarted and gave
+// stray lines on others (LASRecomp-Android-Plus 08bbaef); plain fetches work on every driver
+vec4 gatherDepth(vec2 q) {
+ ivec2 sz = textureSize(depthImg, 0), b = ivec2(floor(q * vec2(sz) - 0.5));
+ ivec2 lo = ivec2(0), hi = sz - 1;
+ return vec4(texelFetch(depthImg, clamp(b + ivec2(0, 1), lo, hi), 0).r, texelFetch(depthImg, clamp(b + ivec2(1, 1), lo, hi), 0).r,
+             texelFetch(depthImg, clamp(b + ivec2(1, 0), lo, hi), 0).r, texelFetch(depthImg, clamp(b, lo, hi), 0).r);
+}
 float viewDepth(vec2 q) {
- vec4 m = textureGather(depthImg, q);
+ vec4 m = gatherDepth(q);
  float d = min(min(m.x, m.y), min(m.z, m.w)), n = p.z.x, f = p.z.y;
  return 2.0 * n * f / max((f + n) - (d * 2.0 - 1.0) * (f - n), 1e-6);
 }
@@ -329,6 +357,15 @@ layout(set=0,binding=2) uniform sampler2D depthImg;
 layout(location=0) in vec2 uv;
 layout(location=0) out vec4 result;
 layout(push_constant) uniform P { vec4 r0; vec4 r1; vec4 r2; vec4 t; vec4 z; vec4 rect; } p;
+// the 2x2 depth texels around q, as textureGather would return them, read one by one: a gather on
+// the game's depth-stencil image froze an Adreno 650 (Galaxy S20 FE) until it restarted and gave
+// stray lines on others (LASRecomp-Android-Plus 08bbaef); plain fetches work on every driver
+vec4 gatherDepth(vec2 q) {
+ ivec2 sz = textureSize(depthImg, 0), b = ivec2(floor(q * vec2(sz) - 0.5));
+ ivec2 lo = ivec2(0), hi = sz - 1;
+ return vec4(texelFetch(depthImg, clamp(b + ivec2(0, 1), lo, hi), 0).r, texelFetch(depthImg, clamp(b + ivec2(1, 1), lo, hi), 0).r,
+             texelFetch(depthImg, clamp(b + ivec2(1, 0), lo, hi), 0).r, texelFetch(depthImg, clamp(b, lo, hi), 0).r);
+}
 float lin(float d) {
  float n = p.z.x, f = p.z.y;
  return 2.0 * n * f / max((f + n) - (d * 2.0 - 1.0) * (f - n), 1e-6);
@@ -349,8 +386,8 @@ void main() {
  vec4 m4 = (cur[0] + cur[1] + cur[2] + cur[3]) * 0.25; float mean = (m4.x + m4.y + m4.z + m4.w) * 0.25;
  vec4 dv = abs(cur[0] - mean) + abs(cur[1] - mean) + abs(cur[2] - mean) + abs(cur[3] - mean);
  vec2 dt = 1.0 / vec2(textureSize(depthImg, 0));
- vec4 g = min(min(textureGather(depthImg, uv + vec2(-4.0, -4.0) * dt), textureGather(depthImg, uv + vec2(4.0, -4.0) * dt)),
-              min(textureGather(depthImg, uv + vec2(-4.0, 4.0) * dt), textureGather(depthImg, uv + vec2(4.0, 4.0) * dt)));
+ vec4 g = min(min(gatherDepth(uv + vec2(-4.0, -4.0) * dt), gatherDepth(uv + vec2(4.0, -4.0) * dt)),
+              min(gatherDepth(uv + vec2(-4.0, 4.0) * dt), gatherDepth(uv + vec2(4.0, 4.0) * dt)));
  float z = lin(min(min(g.x, g.y), min(g.z, g.w)));
  float zl = clamp(log(z / p.z.x) / log(p.z.y / p.z.x), 0.0, 1.0);
  result.z = zl;
@@ -445,6 +482,15 @@ layout(set=0,binding=3) uniform sampler2D flowImg;
 layout(location=0) in vec2 uv;
 layout(location=0) out vec4 result;
 layout(push_constant) uniform P { vec4 r0; vec4 r1; vec4 r2; vec4 t; vec4 z; vec4 rect; vec4 a; } p;
+// the 2x2 depth texels around q, as textureGather would return them, read one by one: a gather on
+// the game's depth-stencil image froze an Adreno 650 (Galaxy S20 FE) until it restarted and gave
+// stray lines on others (LASRecomp-Android-Plus 08bbaef); plain fetches work on every driver
+vec4 gatherDepth(vec2 q) {
+ ivec2 sz = textureSize(depthImg, 0), b = ivec2(floor(q * vec2(sz) - 0.5));
+ ivec2 lo = ivec2(0), hi = sz - 1;
+ return vec4(texelFetch(depthImg, clamp(b + ivec2(0, 1), lo, hi), 0).r, texelFetch(depthImg, clamp(b + ivec2(1, 1), lo, hi), 0).r,
+             texelFetch(depthImg, clamp(b + ivec2(1, 0), lo, hi), 0).r, texelFetch(depthImg, clamp(b, lo, hi), 0).r);
+}
 float lin(float d) {
  float n = p.z.x, f = p.z.y;
  return 2.0 * n * f / max((f + n) - (d * 2.0 - 1.0) * (f - n), 1e-6);
@@ -460,7 +506,7 @@ float err(vec2 at, vec2 from, vec2 ts) {
 }
 void main() {
  vec2 ts = 1.0 / vec2(textureSize(curImg, 0));
- vec4 g = textureGather(depthImg, uv);
+ vec4 g = gatherDepth(uv);
  float z = lin(min(min(g.x, g.y), min(g.z, g.w)));
  float zl = clamp(log(z / p.z.x) / log(p.z.y / p.z.x), 0.0, 1.0);
  result = vec4(0.0, 0.0, zl, 0.0);
