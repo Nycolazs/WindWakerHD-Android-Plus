@@ -54,6 +54,23 @@ Get the latest APK from the **[Releases page](../../releases/latest)**.
 
 ## What's new in Plus
 
+### 🆕 New in v1.14: a lighter game thread, the Wind Waker's songs visible, no GamePad flashes, faster Fast Forward
+
+- **Less CPU for the same game**: the game code is now recompiled with the Android port v0.9.5's improvements
+  ([GreenNaugahyde](https://github.com/GreenNaugahyde/ZeldaWWHDRecompAndroid)): a one-load check at every function
+  entry, indirect calls looked up inline, 64-bit addressing for the game's struct accesses, inline paired-single
+  loads and stores, and the hottest functions placed together (instruction cache). The GX2 register writes take a
+  fast path for shader constants. On a Galaxy S20 FE (Outset, Windfall, Dragon Roost; 60 fps generated, 1.5x):
+  the game thread went from 38% to 33% of a core and the whole game from 102% to 95%, with the same frame pacing -
+  a cooler phone and more room on slower ones. The first start compiles the game code again (about 5 minutes).
+- **The Wind Waker's songs** (#24): in the Hybrid layout (the default for touch play) the GamePad covered the whole
+  screen while Link held the baton, hiding him and the song's notes. Now the TV stays on screen with the GamePad as
+  an inset.
+- **No GamePad flash at doors and loads** (#28): in the Hybrid layout, every load or scene change of a game in progress
+  showed the GamePad for a moment. It now shows only in menus and before a file is loaded.
+- **Fast Forward 3x and 4x** really run that fast with 60 fps (generated) on (as the original project's #268): the
+  game no longer waits for the display while it's held.
+
 ### 🆕 New in v1.13: the first start in half the time, save states from anywhere, Cemu content packs, PowerVR and Huawei fixes
 - **The game code is prepared in about half the time** at the first start (and after updates that
   change it): on a Galaxy S20 FE **4.6 minutes instead of about 10**. The functions a play through
@@ -426,6 +443,11 @@ Put **one** of these in a folder on your phone (for example `Download/WindWakerH
    meanwhile; a notification shows the progress.
 4. The game starts. Have fun!
 
+> **Updating to v1.14?** v1.14 is signed with the key of **v1.12** (the v1.7 key's password is no longer
+> available). **v1.12 installs v1.14 directly.** From **v1.13** (or v1.7–v1.11.1): turn on **Saves → Saves outside
+> the app** (or **Saves → Export saves**), uninstall, install v1.14 and set the game up again; the saves come back by
+> themselves (or with **Saves → Import saves**). From v1.14 on this key stays.
+>
 > **Updating from v1.6 or older?** v1.6's signing key was lost, so v1.7 is signed with a new,
 > permanent key and Android won't install it over v1.6. **Once more:**
 > 1. In the old app, open **≡ → Saves → Export saves** and pick a folder (for example `Download`).
