@@ -42,7 +42,7 @@ static std::atomic<int> g_watch_r3_count{0};
 void true60_nan_probe(uint32_t addr);  // true60.cpp (WWHD_NAN_PROBE)
 // WWHD_COVERAGE=<file>: every game function entered is noted (one bit per instruction address) and
 // the list of their addresses written to <file> every 20 s, merged with what it already holds. For
-// tools/recomp/hot_functions.txt: the functions the play reaches, compiled fully on the phone, the
+// tools/recomp/covered_functions.txt: the functions the play reaches, compiled fully on the phone, the
 // rest at a lower level (runtime/src/recomp/compile.cpp)
 namespace {
 constexpr uint32_t kCovBase = 0x02000000, kCovSize = 0x01000000;

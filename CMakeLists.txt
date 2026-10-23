@@ -214,9 +214,11 @@ elseif(ANDROID)
 "    .section .rodata
     .balign 16
     .global wwhd_ops_bc, wwhd_ops_bc_end, wwhd_hooks, wwhd_hooks_end, wwhd_release_eur, wwhd_release_eur_end
-    .global wwhd_release_jpn, wwhd_release_jpn_end, wwhd_hot_functions, wwhd_hot_functions_end
-wwhd_hot_functions: .incbin \"${HOOKS_DIR}/hot_functions.txt\"
-wwhd_hot_functions_end:
+    .global wwhd_release_jpn, wwhd_release_jpn_end, wwhd_hot, wwhd_hot_end, wwhd_covered, wwhd_covered_end
+wwhd_hot: .incbin \"${HOOKS_DIR}/hot_functions.txt\"
+wwhd_hot_end:
+wwhd_covered: .incbin \"${HOOKS_DIR}/covered_functions.txt\"
+wwhd_covered_end:
 wwhd_release_eur: .incbin \"${HOOKS_DIR}/release_eur.txt\"
 wwhd_release_eur_end:
 wwhd_release_jpn: .incbin \"${HOOKS_DIR}/release_jpn.txt\"
@@ -238,7 +240,7 @@ wwhd_hooks:
 wwhd_hooks_end:
 ")
     set_source_files_properties(${CMAKE_BINARY_DIR}/recomp_data.S PROPERTIES OBJECT_DEPENDS
-      "${OPS_BC};${HOOKS_DIR}/hooks.txt;${HOOKS_DIR}/hooks_climb.txt;${HOOKS_DIR}/hooks_mods.txt;${HOOKS_DIR}/hooks_aspect.txt;${HOOKS_DIR}/hooks_perf.txt;${HOOKS_DIR}/hooks_resmgr.txt;${HOOKS_DIR}/hot_functions.txt;${HOOKS_DIR}/release_eur.txt;${HOOKS_DIR}/release_jpn.txt")
+      "${OPS_BC};${HOOKS_DIR}/hooks.txt;${HOOKS_DIR}/hooks_climb.txt;${HOOKS_DIR}/hooks_mods.txt;${HOOKS_DIR}/hooks_aspect.txt;${HOOKS_DIR}/hooks_perf.txt;${HOOKS_DIR}/hooks_resmgr.txt;${HOOKS_DIR}/hot_functions.txt;${HOOKS_DIR}/covered_functions.txt;${HOOKS_DIR}/release_eur.txt;${HOOKS_DIR}/release_jpn.txt")
 
     if(WWHD_DEVICE_RECOMP)
       # The game code is linked at startup (loader.cpp). The game functions the runtime calls

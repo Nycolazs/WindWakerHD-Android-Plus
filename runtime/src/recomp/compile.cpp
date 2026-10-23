@@ -1,6 +1,8 @@
 // LLVM compile pipeline for the recompiled game (see compile.h).
 #include "compile.h"
 
+#include <llvm/IR/Constants.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Module.h>
@@ -22,20 +24,91 @@
 #include <sys/auxv.h>
 #endif
 
+#include <algorithm>
+#include <functional>
+#include <map>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
+#include <set>
+#include <sstream>
 #include <thread>
 #include <unordered_set>
 #include <vector>
 
+#include "../disc/crypto.h"
 #include "../release.h"
 #include "emit.h"
 #include "locals.h"
 #include "program.h"
 
 namespace recomp {
+
+namespace {
+// Paired-single and single multiplies round their second operand to 25 bits (round25 in ppc.h: the
+// double's bits masked and rounded at bit 27). A value widened from a float has its low 29 mantissa
+// bits clear, so for it the masks are no-ops; LLVM can't see through fpext to the bits. Here the
+// masks on such values fold away (round25(x) = x), as do other ands that keep or clear only those bits.
+struct SingleBitsPass : llvm::PassInfoMixin<SingleBitsPass> {
+    static bool single(llvm::Value* v, llvm::SmallPtrSetImpl<llvm::Value*>& seen, int depth) {
+        using namespace llvm;
+        if (auto* e = dyn_cast<FPExtInst>(v)) return e->getSrcTy()->getScalarType()->isFloatTy();
+        if (auto* c = dyn_cast<ConstantFP>(v)) return (c->getValueAPF().bitcastToAPInt().getZExtValue() & 0x1FFFFFFFull) == 0;
+        if (auto* c = dyn_cast<Constant>(v); c && c->getType()->isVectorTy()) {
+            auto* vt = cast<FixedVectorType>(c->getType());
+            for (unsigned k = 0; k < vt->getNumElements(); k++) {
+                Constant* el = c->getAggregateElement(k);
+                if (!el || !(isa<UndefValue>(el) || (isa<ConstantFP>(el) && (cast<ConstantFP>(el)->getValueAPF().bitcastToAPInt().getZExtValue() & 0x1FFFFFFFull) == 0)))
+                    return false;
+            }
+            return true;
+        }
+        if (depth > 6) return false;
+        if (!seen.insert(v).second) return true;  // a cycle of phis: single if everything entering it is
+        if (auto* p = dyn_cast<PHINode>(v)) {
+            for (Value* in : p->incoming_values())
+                if (!single(in, seen, depth + 1)) return false;
+            return true;
+        }
+        if (auto* s = dyn_cast<SelectInst>(v)) return single(s->getTrueValue(), seen, depth + 1) && single(s->getFalseValue(), seen, depth + 1);
+        if (auto* u = dyn_cast<UnaryOperator>(v)) return u->getOpcode() == Instruction::FNeg && single(u->getOperand(0), seen, depth + 1);
+        if (auto* c = dyn_cast<CallInst>(v))
+            if (c->getIntrinsicID() == Intrinsic::fabs) return single(c->getArgOperand(0), seen, depth + 1);
+        // a lane of a vector of such values (paired-single loads widen both floats at once)
+        if (auto* e = dyn_cast<ExtractElementInst>(v)) return single(e->getVectorOperand(), seen, depth + 1);
+        if (auto* e = dyn_cast<InsertElementInst>(v))
+            return single(e->getOperand(0), seen, depth + 1) && single(e->getOperand(1), seen, depth + 1);
+        if (auto* sv = dyn_cast<ShuffleVectorInst>(v))
+            return single(sv->getOperand(0), seen, depth + 1) && single(sv->getOperand(1), seen, depth + 1);
+        if (isa<PoisonValue>(v) || isa<UndefValue>(v)) return true;  // (lanes nobody reads)
+        return false;
+    }
+    llvm::PreservedAnalyses run(llvm::Function& f, llvm::FunctionAnalysisManager&) {
+        using namespace llvm;
+        constexpr uint64_t kLow = 0x1FFFFFFFull;
+        bool changed = false;
+        for (BasicBlock& b : f)
+            for (Instruction& i : make_early_inc_range(b)) {
+                auto* bc = dyn_cast<BitCastInst>(&i);
+                if (!bc || !bc->getSrcTy()->isDoubleTy() || !bc->getDestTy()->isIntegerTy(64)) continue;
+                SmallPtrSet<Value*, 16> seen;
+                if (!single(bc->getOperand(0), seen, 0)) continue;
+                for (User* u : make_early_inc_range(bc->users())) {
+                    auto* a = dyn_cast<BinaryOperator>(u);
+                    ConstantInt* c = nullptr;
+                    if (!a || a->getOpcode() != Instruction::And || !(c = dyn_cast<ConstantInt>(a->getOperand(1)))) continue;
+                    uint64_t m = c->getZExtValue();
+                    if ((m | kLow) == ~0ull) a->replaceAllUsesWith(bc);
+                    else if ((m & ~kLow) == 0) a->replaceAllUsesWith(ConstantInt::get(a->getType(), 0));
+                    else continue;
+                    changed = true;
+                }
+            }
+        return changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
+    }
+};
+}  // namespace
 
 // Code for the CPU we run on: generic AArch64 plus only the extensions the kernel reports (a CPU
 // model would imply some the firmware disables, e.g. SVE on Snapdragons); the model itself is used
@@ -51,7 +124,7 @@ std::string host_features() {
     if (hw & (1UL << 9)) f += "+fullfp16,";   // HWCAP_FPHP
     if (hw & (1UL << 20)) f += "+dotprod,";   // HWCAP_ASIMDDP
     if (hw & (1UL << 15)) f += "+rcpc,";      // HWCAP_LRCPC
-    if (hw & (1UL << 7)) f += "+rdm,";        // HWCAP_ASIMDRDM
+    if (hw & (1UL << 12)) f += "+rdm,";       // HWCAP_ASIMDRDM (bit 7 is CRC32)
     unsigned long hw2 = getauxval(AT_HWCAP2);
     static const bool sveOn = getenv("WWHD_SVE") && atoi(getenv("WWHD_SVE")) != 0;
     const bool sve = sveOn && (hw & (1UL << 22));  // HWCAP_SVE
@@ -92,54 +165,160 @@ bool compile_game(const CompileOptions& opt, CompileResult& res, std::string& er
     std::string features = opt.cpu.empty() ? host_features() : "";
     std::string tune = opt.cpu.empty() ? llvm::sys::getHostCPUName().str() : "";
 
-    // Hot and cold code (as LASRecomp-Android-Plus does): most of the game's ~40000 functions never run
+    // Modules are cut at every perModule-th entry of the unpatched executable, so mod pack patches
+    // (CodePatch) change only the modules that hold patched code; code caves get modules of their own.
+    // Each module's object file is named by a hash of everything its code depends on: the cache keeps
+    // the unchanged ones, and switching packs back finds the earlier objects.
+    std::vector<uint32_t> cuts;
+    {
+        Program base;
+        const Program* b = &prog;
+        if (code_patch()) {
+            base.patch = nullptr;
+            if (!base.load(opt.rpxPath, err)) return false;
+            b = &base;
+        }
+        for (size_t i = 0; i < b->entries.size(); i += opt.perModule) cuts.push_back(b->entries[i]);
+    }
+    // The hot functions (hot_functions.txt, hottest first) go into modules of their own, first in the
+    // load order: the code every frame runs then lies together (instruction cache, TLB), and a module's
+    // small hot callees can be inlined into their callers. The rest stays cut by address.
+    std::vector<uint32_t> hot;
+    std::set<uint32_t> hotSet;
+    {
+        std::istringstream in(opt.hotText);
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            uint32_t a = release::code((uint32_t)strtoul(line.c_str(), nullptr, 16));  // (USA address)
+            if (!a || (a >= prog.caveLo && a < prog.caveHi) || !std::binary_search(prog.entries.begin(), prog.entries.end(), a))
+                continue;
+            if (hotSet.insert(a).second) hot.push_back(a);
+        }
+    }
+    // Hot callees right after their callers (static calls, bl): the hottest function first, then its
+    // hot callees, hottest first, a few levels deep, then the next hot function not placed yet. Code
+    // that runs together then shares cache lines, pages and modules (inlining) instead of lying wherever
+    // its rank puts it. WWHD_RECOMP_HOT_ORDER=0: by rank only (in the code cache key).
+    if (hot_call_order()) {
+        std::map<uint32_t, size_t> rank;
+        for (size_t i = 0; i < hot.size(); i++) rank[hot[i]] = i;
+        std::map<uint32_t, std::vector<uint32_t>> callees;
+        for (uint32_t f : hot) {
+            std::vector<uint32_t>& cs = callees[f];
+            for (uint32_t a = f, end = prog.funcEnd(f); a < end; a += 4) {
+                uint32_t w = prog.word(a);
+                if ((w >> 26) != 18 || (w & 3) != 1) continue;  // bl
+                uint32_t t = a + (uint32_t)((int32_t)(w << 6) >> 6 & ~3);
+                if (t != f && rank.count(t) && std::find(cs.begin(), cs.end(), t) == cs.end()) cs.push_back(t);
+            }
+            std::sort(cs.begin(), cs.end(), [&](uint32_t x, uint32_t y) { return rank[x] < rank[y]; });
+        }
+        std::vector<uint32_t> order;
+        std::set<uint32_t> placed;
+        std::function<void(uint32_t, int)> place = [&](uint32_t f, int depth) {
+            if (!placed.insert(f).second) return;
+            order.push_back(f);
+            if (depth == 0) return;
+            for (uint32_t c : callees[f]) place(c, depth - 1);
+        };
+        for (uint32_t f : hot) place(f, 3);
+        hot.swap(order);
+    }
+    // Covered and cold code (as LASRecomp-Android-Plus does): most of the game's ~40000 functions never run
     // in a play, or run too rarely to matter, yet -O3 on them was most of the first start's ~10 minutes
-    // on a phone that soon runs hot. The functions of hot_functions.txt (what a play through the game
-    // reached) are compiled as before; the others at coldOptLevel, in modules of their own (LASRecomp
-    // measured cold functions marked optnone inside -O3 modules 1.8x slower to build than separate ones).
-    // On a Galaxy S20 FE, 4 jobs: everything at -O3 363 s, with the list 253 s, everything cold 94 s;
-    // a module at -O3 35 s, at the cold level 9 s. The game thread's time in Outset stays the same.
-    std::unordered_set<uint32_t> hot;
-    for (size_t a = 0; a < opt.hotList.size();) {
-        size_t b = opt.hotList.find('\n', a);
-        if (b == std::string::npos) b = opt.hotList.size();
-        // (USA addresses, as the hook lists: the running release's)
-        if (b > a && opt.hotList[a] != '#')
-            if (uint32_t e = release::code((uint32_t)strtoul(opt.hotList.substr(a, b - a).c_str(), nullptr, 16))) hot.insert(e);
-        a = b + 1;
+    // on a phone that soon runs hot. The functions of covered_functions.txt (what a play through the game
+    // reached) and what they call directly are compiled as before; the others at coldOptLevel, in modules of
+    // their own (LASRecomp measured cold functions marked optnone inside -O3 modules 1.8x slower to build than
+    // separate ones). On a Galaxy S20 FE, 4 jobs: everything at -O3 363 s, with the list 253 s, everything
+    // cold 94 s. The hot functions above are always compiled fully. An empty list: everything fully.
+    std::unordered_set<uint32_t> covered;
+    {
+        std::istringstream in(opt.coveredText);
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            if (uint32_t e = release::code((uint32_t)strtoul(line.c_str(), nullptr, 16))) covered.insert(e);  // (USA address)
+        }
     }
     // and what they call directly (bl): a play reaches only part of each function's paths, and a
-    // fight, an item or an event the profile never saw goes through a hot function into those
-    if (!hot.empty()) {
-        std::unordered_set<uint32_t> entries(prog.entries.begin(), prog.entries.end()), callees;
-        for (uint32_t f : hot) {
-            if (!entries.count(f)) continue;
+    // fight, an item or an event the profile never saw goes through a covered function into those
+    if (!covered.empty()) {
+        std::unordered_set<uint32_t> callees;
+        for (uint32_t f : covered) {
+            if (!std::binary_search(prog.entries.begin(), prog.entries.end(), f)) continue;
             for (uint32_t a = f, end = prog.funcEnd(f); a < end; a += 4) {
                 const uint32_t w = prog.word(a);
                 if ((w >> 26) != 18 || (w & 3) != 1) continue;  // bl
                 const uint32_t t = a + (uint32_t)(((int32_t)(w << 6)) >> 6 & ~3);
-                if (entries.count(t)) callees.insert(t);
+                if (std::binary_search(prog.entries.begin(), prog.entries.end(), t)) callees.insert(t);
             }
         }
-        hot.insert(callees.begin(), callees.end());
+        covered.insert(callees.begin(), callees.end());
     }
+    auto is_cold = [&](uint32_t a) { return !covered.empty() && !covered.count(a); };
+    constexpr size_t kHotPerModule = 600;
     std::vector<std::vector<uint32_t>> modules;
     std::vector<bool> coldModule;
-    {
-        std::vector<uint32_t> hotFns, coldFns;
-        for (uint32_t e : prog.entries) (hot.empty() || hot.count(e) ? hotFns : coldFns).push_back(e);
-        auto split = [&](const std::vector<uint32_t>& fns, size_t per, bool cold) {
-            for (size_t i = 0; i < fns.size(); i += per) {
-                modules.emplace_back(fns.begin() + i, fns.begin() + std::min(fns.size(), i + per));
-                coldModule.push_back(cold);
+    for (size_t i = 0; i < hot.size(); i += kHotPerModule) {
+        modules.emplace_back(hot.begin() + i, hot.begin() + std::min(hot.size(), i + kHotPerModule));
+        coldModule.push_back(false);
+    }
+    const size_t firstCut = modules.size();
+    // (each cut: its covered functions, then its cold ones in a module of their own)
+    modules.resize(firstCut + 2 * cuts.size());
+    for (size_t i = 0; i < cuts.size(); i++) coldModule.push_back(false), coldModule.push_back(true);
+    std::vector<uint32_t> caveFuncs;
+    for (uint32_t a : prog.entries) {
+        if (hotSet.count(a)) continue;
+        if (a >= prog.caveLo && a < prog.caveHi) {
+            caveFuncs.push_back(a);
+            continue;
+        }
+        auto it = std::upper_bound(cuts.begin(), cuts.end(), a);
+        modules[firstCut + 2 * (it == cuts.begin() ? 0 : it - cuts.begin() - 1) + (is_cold(a) ? 1 : 0)].push_back(a);
+    }
+    for (size_t i = 0; i < caveFuncs.size(); i += opt.perModule) {  // (pack code: always compiled fully)
+        modules.emplace_back(caveFuncs.begin() + i, caveFuncs.begin() + std::min(caveFuncs.size(), i + opt.perModule));
+        coldModule.push_back(false);
+    }
+    for (size_t i = modules.size(); i-- > 0;)
+        if (modules[i].empty()) modules.erase(modules.begin() + i), coldModule.erase(coldModule.begin() + i);
+    res.coldFunctions = 0;
+    for (size_t i = 0; i < modules.size(); i++)
+        if (coldModule[i]) res.coldFunctions += modules[i].size();
+    std::vector<std::string> names(modules.size());
+    for (size_t i = 0; i < modules.size(); i++) {
+        std::string d = opt.baseKey + "\ncpu " + cpu + " " + features + " " + tune + " -O" +
+                        std::to_string(coldModule[i] ? opt.coldOptLevel : opt.optLevel) + (coldModule[i] ? " cold" : "") + "\n";
+        auto put = [&](uint32_t v) { d.append((const char*)&v, 4); };
+        auto isEntry = [&](uint32_t a) { return std::binary_search(prog.entries.begin(), prog.entries.end(), a); };
+        if (getenv("WWHD_PACK_TRACE") && atoi(getenv("WWHD_PACK_TRACE")) && modules[i][0] >= prog.caveLo && modules[i][0] < prog.caveHi)
+            d += "pack trace\n";  // emit.cpp, trace()
+        for (uint32_t f : modules[i]) {
+            uint32_t end = prog.funcEnd(f);
+            put(f), put(end), put(prog.inText(end) && isEntry(end));
+            for (uint32_t a = f; a < end; a += 4) {
+                uint32_t w = prog.word(a), op = w >> 26;
+                put(w);
+                // targets outside the function: a call / tail call when they are entries, else a dispatch
+                uint32_t t = 0xFFFFFFFFu;
+                if (op == 18) t = (uint32_t)(((int32_t)((w & 0x03FFFFFC) << 6) >> 6) + (w & 2 ? 0 : (int32_t)a));
+                else if (op == 16) t = (uint32_t)((int32_t)(int16_t)(w & 0xFFFC) + (w & 2 ? 0 : (int32_t)a));
+                if (t != 0xFFFFFFFFu && (t < f || t >= end)) put(t), put(isEntry(t));
             }
-        };
-        split(hotFns, opt.perModule, false);
-        split(coldFns, opt.perModule, true);
-        res.coldFunctions = coldFns.size();
+        }
+        uint8_t h[20];
+        disc::sha1((const uint8_t*)d.data(), d.size(), h);
+        char hex[48] = "m_";
+        for (int k = 0; k < 20; k++) snprintf(hex + 2 + 2 * k, 3, "%02x", h[k]);
+        names[i] = hex;
     }
     llvm::sys::fs::create_directories(opt.outDir);
-    if (opt.modulesTotal) *opt.modulesTotal = modules.size();
+    std::vector<size_t> todo;
+    for (size_t i = 0; i < modules.size(); i++)
+        if (!llvm::sys::fs::exists(opt.outDir + "/" + names[i] + ".o")) todo.push_back(i);
+    if (opt.modulesTotal) *opt.modulesTotal = todo.size();
     std::atomic<size_t> next{0}, instructions{0}, unhandled{0}, localized{0}, localFallback{0};
     std::atomic<bool> failed{false};
     std::mutex errm;
@@ -148,19 +327,14 @@ bool compile_game(const CompileOptions& opt, CompileResult& res, std::string& er
         if (!failed.exchange(true)) err = why;
     };
     auto worker = [&] {
-        for (size_t i; !failed && (i = next++) < modules.size();) {
-            const bool cold = coldModule[i];
-            const int level = cold ? opt.coldOptLevel : opt.optLevel;
+        for (size_t n; !failed && (n = next++) < todo.size();) {
             if (opt.cancel && *opt.cancel) return fail("cancelled");
+            const size_t i = todo[n];
             llvm::LLVMContext ctx;
             EmitStats st;
             std::string e;
-            char name[32];
-            snprintf(name, sizeof name, "code_%03zu", i);
-            if (opt.keepExisting && llvm::sys::fs::exists(opt.outDir + "/" + name + ".o")) {
-                if (opt.modulesDone) ++*opt.modulesDone;
-                continue;
-            }
+            const char* name = names[i].c_str();
+            const int level = coldModule[i] ? opt.coldOptLevel : opt.optLevel;
             // WWHD_RECOMPILE_TIMES=1: the time of each step (emit, ops inlined, registers in locals, optimization, code)
             static const bool times = getenv("WWHD_RECOMPILE_TIMES") != nullptr;
             auto tp = std::chrono::steady_clock::now();
@@ -200,6 +374,7 @@ bool compile_game(const CompileOptions& opt, CompileResult& res, std::string& er
             llvm::CGSCCAnalysisManager cgam;
             llvm::ModuleAnalysisManager mam;
             llvm::PassBuilder pb(tm.get());
+            pb.registerPeepholeEPCallback([](llvm::FunctionPassManager& fpm, llvm::OptimizationLevel) { fpm.addPass(SingleBitsPass()); });
             pb.registerModuleAnalyses(mam);
             pb.registerCGSCCAnalyses(cgam);
             pb.registerFunctionAnalyses(fam);
@@ -256,6 +431,8 @@ bool compile_game(const CompileOptions& opt, CompileResult& res, std::string& er
     for (auto& t : pool) t.join();
     res.functions = prog.entries.size();
     res.modules = modules.size();
+    res.compiled = todo.size();
+    for (auto& n : names) res.objects.push_back(n + ".o");
     res.instructions = instructions;
     res.unhandled = unhandled;
     res.localized = localized;

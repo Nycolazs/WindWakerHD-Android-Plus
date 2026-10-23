@@ -56,9 +56,18 @@ const LocalsOptions& locals_options() {
     return o;
 }
 
+// compile.cpp: hot functions ordered by their calls (WWHD_RECOMP_HOT_ORDER=0: by rank only)
+bool hot_call_order() {
+    static const bool on = !getenv("WWHD_RECOMP_HOT_ORDER") || atoi(getenv("WWHD_RECOMP_HOT_ORDER")) != 0;
+    return on;
+}
+
 std::string code_switches() {
     const LocalsOptions& o = locals_options();
-    return std::string("locals ") + (o.on ? "1" : "0") + " poison " + (o.poison ? "1" : "0");
+    // (emit.cpp: WWHD_RECOMP_LEAF_SPLIT=0 keeps the slow entry path inside functions without calls)
+    const bool leaf = !getenv("WWHD_RECOMP_LEAF_SPLIT") || atoi(getenv("WWHD_RECOMP_LEAF_SPLIT")) != 0;
+    return std::string("locals ") + (o.on ? "1" : "0") + " poison " + (o.poison ? "1" : "0") + (leaf ? "" : " leafsplit 0") +
+           (hot_call_order() ? "" : " hotorder 0");
 }
 
 namespace {
@@ -101,6 +110,7 @@ std::vector<Slot> cpu_slots(llvm::LLVMContext& C) {
     s.push_back({(uint32_t)offsetof(Cpu, res_val), 4, i32, true, Poison::None});
     s.push_back({(uint32_t)offsetof(Cpu, pc), 4, i32, false, Poison::None});
     s.push_back({(uint32_t)offsetof(Cpu, core), 4, i32, true, Poison::None});
+    s.push_back({(uint32_t)offsetof(Cpu, preempt), 4, i32, true, Poison::None});  // read at entry only
     s.push_back({(uint32_t)offsetof(Cpu, thread), 8, ptr, true, Poison::None});
     return s;
 }
@@ -163,7 +173,11 @@ public:
         byteSlot.assign(sizeof(Cpu), -1);
         for (size_t i = 0; i < slots.size(); i++)
             for (uint32_t b = slots[i].off; b < slots[i].off + slots[i].size; b++) byteSlot[b] = (int)i;
-        for (size_t i = 0; i < slots.size(); i++) (slots[i].keepAtReturn ? keepAtReturn : scratch).set(i);
+        // mod packs' code (emit.cpp marks it "wwhd-noeabi") doesn't follow the EABI: it returns values in
+        // any register and passes the CR to its own functions (Cemu runs it exactly), so it keeps every
+        // register at returns and writes everything back before calls
+        noEabi = f.hasFnAttribute("wwhd-noeabi");
+        for (size_t i = 0; i < slots.size(); i++) (slots[i].keepAtReturn || noEabi ? keepAtReturn : scratch).set(i);
         // the CR bits (but bit 6, the vararg float flag) and XER: not read by an EABI callee (writeback)
         auto mark = [&](uint32_t off) {
             for (size_t i = 0; i < slots.size(); i++)
@@ -229,10 +243,11 @@ private:
     // the next branch. GPRs and FPRs are all written back: the compiler's register save helpers
     // (_savegpr_N: the frame in r11, LR kept in r0 across the call) don't follow the EABI.
     // Instruction hooks (site_*), the runtime's helpers and tail calls get every changed register.
-    static bool eabi_call(llvm::CallBase* cb) {
-        if (cb->isMustTailCall()) return false;
+    bool noEabi = false;
+    bool eabi_call(llvm::CallBase* cb) const {
+        if (noEabi || cb->isMustTailCall()) return false;
         llvm::Function* f = cb->getCalledFunction();
-        if (!f) return false;
+        if (!f) return !cb->isInlineAsm();  // the emitter's inline dispatch (a game function or ppc_dispatch)
         llvm::StringRef n = f->getName();
         return n.starts_with("f_") || n.starts_with("imp_") || n.starts_with("hook_") || n == "ppc_dispatch";
     }

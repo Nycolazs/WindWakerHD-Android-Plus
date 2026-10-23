@@ -20,6 +20,8 @@ int drawdone_mode();
 namespace gx2 {
 constexpr uint32_t kDepthSlicesReg = 0xA002;  // our convention (unused register): depth buffer array size
 }
+// g_shader_reg_kind (gx2_core.cpp): what a change of a register means for the renderer's shader key
+enum : uint8_t { kShaderRegNever = 0, kShaderRegAlways = 1, kShaderRegCheck = 2 };
 
 namespace gfx {
 const char* backend_name();      // "Metal" or "Vulkan"

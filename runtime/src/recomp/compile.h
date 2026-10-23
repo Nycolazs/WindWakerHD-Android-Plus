@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstddef>
 #include <string>
+#include <vector>
 
 namespace recomp {
 
@@ -16,16 +17,17 @@ struct CompileOptions {
     std::string rpxPath;      // game/code/cking.rpx
     std::string opsBitcode;   // ops.c as LLVM bitcode
     std::string hooksText;    // the hooks*.txt files, concatenated
-    std::string outDir;       // code_NNN.o are written here
+    std::string hotText;      // hot_functions.txt: functions placed together in modules of their own, first
+    std::string outDir;       // m_<hash>.o are written here (existing ones are kept: the hash names their content)
+    std::string baseKey;      // what the code depends on besides its own instructions (code_base_key, loader.h)
     std::string cpu;          // target CPU ("" = the host's, e.g. on the device; "generic" for a PC build)
     size_t perModule = 1500;  // guest functions per module (and object file)
     int optLevel = kDefaultOptLevel;  // LLVM -O2 or -O3
     unsigned jobs = 0;        // parallel modules (0: hardware threads)
-    // the functions a play through the game reaches (tools/recomp/hot_functions.txt: hex entry addresses,
-    // one per line; "" = all): compiled at optLevel, the others at coldOptLevel in modules of their own
-    std::string hotList;
+    // the functions a play through the game reaches (tools/recomp/covered_functions.txt: hex USA entry
+    // addresses, one per line; "" = all): compiled at optLevel, the others at coldOptLevel in modules of their own
+    std::string coveredText;
     int coldOptLevel = 0;  // compile.cpp: 0 SROA + EarlyCSE + SimplifyCFG and the fast code generator
-    bool keepExisting = false;  // resume: modules whose object file exists aren't compiled again
     std::atomic<size_t>* modulesDone = nullptr;   // progress (optional)
     std::atomic<size_t>* modulesTotal = nullptr;  // set once the executable is analyzed
     std::atomic<bool>* cancel = nullptr;
@@ -36,6 +38,8 @@ struct CompileResult {
     size_t localized = 0, localFallback = 0;
     size_t coldFunctions = 0;  // compiled at coldOptLevel  // functions with registers in locals, and those kept in the struct
     double seconds = 0;
+    size_t compiled = 0;               // modules compiled now (the others were in the cache)
+    std::vector<std::string> objects;  // the object files of this code, in module order
 };
 
 // true and `res` when all object files were written; else false and `err`

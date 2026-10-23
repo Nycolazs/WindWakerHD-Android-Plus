@@ -137,6 +137,12 @@ uint32_t current_thread() { return t_self ? t_self->guest : 0; }
 // the running one sets g_core_preempt, and the running thread yields at its next function entry.
 // WWHD_NO_SCHED=1 lets all threads run freely (the old behaviour).
 volatile int g_core_preempt[3];
+// The device-recompiled code checks only its own thread's copy (Cpu::preempt, one load: recomp/ops.c ppcop_enter,
+// from the Android port v0.9.5): whoever sets a core's flag also sets the copy of the thread running there.
+// save states: threads that do not reach an HLE wait (pollers) park at a guest function entry.
+// 0 off, 1 any thread may (saving), 2 only threads at their saved place (loading)
+static std::atomic<int> g_entry_parks{0};
+static inline void set_cpu_preempt(Cpu& c, bool v) { __atomic_store_n(&c.preempt, (uint32_t)v, __ATOMIC_RELAXED); }
 static const bool g_sched_on = getenv("WWHD_NO_SCHED") == nullptr;
 
 struct CoreSched {
@@ -184,7 +190,10 @@ static void core_acquire(HostThread* t) {
         { std::lock_guard<std::mutex> tl(g_tick_m); }
         g_tick_cv.notify_one();
     }
-    if (k.owner && t->prio < k.owner->prio) g_core_preempt[core] = 1;
+    if (k.owner && t->prio < k.owner->prio) {
+        g_core_preempt[core] = 1;
+        set_cpu_preempt(k.owner->cpu, true);
+    }
     auto start = std::chrono::steady_clock::now();
     t->acquired = start;
     t->ready_since = start;
@@ -219,7 +228,8 @@ static void core_acquire(HostThread* t) {
     t->acquired = now;
     t->cpu.core = core;
     HostThread* next = best_ready(k);
-    g_core_preempt[core] = next && next->prio < t->prio;
+    g_core_preempt[core] = (next && next->prio < t->prio) || g_ppc_trace;  // (tracing: every entry, ppc_entry)
+    set_cpu_preempt(t->cpu, g_core_preempt[core] || g_entry_parks.load(std::memory_order_relaxed) != 0);
 }
 
 static void core_release(HostThread* t) {
@@ -246,11 +256,20 @@ static bool should_yield(CoreSched& k, HostThread* t) {  // k.m held
     return next->prio == t->prio && std::chrono::steady_clock::now() - t->acquired >= kSlice;
 }
 
-// save states: threads that do not reach an HLE wait (pollers) park at a guest function entry.
-// 0 off, 1 any thread may (saving), 2 only threads at their saved place (loading)
-static std::atomic<int> g_entry_parks{0};
 static void try_entry_park(HostThread* t, Cpu* c);
 namespace threads { static std::string thread_name(HostThread* t); }
+
+// the device-recompiled code's entry check (recomp/ops.c ppcop_enter) when its thread's flag is set: trace, the
+// per-core check, then the flag again from the core's (still set while another thread's turn is due). 0: the function
+// runs from its start (the port keeps no rebuilt call chains: nothing else).
+extern "C" __attribute__((preserve_most)) uint32_t ppc_entry(Cpu* c, uint32_t fn, uint32_t size) {
+    (void)size;
+    if (__builtin_expect(g_ppc_trace, 0)) ppc_trace_enter(fn);
+    ppc_preempt(c);
+    set_cpu_preempt(*c, g_core_preempt[c->core % 3] || g_ppc_trace || g_entry_parks.load(std::memory_order_relaxed) != 0);
+    return 0;
+}
+extern "C" void ppc_resume_failed(Cpu* c) { fatal("game code: a resume without a call chain (pc %08X)", c->pc); }
 
 extern "C" void ppc_preempt(Cpu* c) {
     HostThread* t = (HostThread*)c->thread;
@@ -326,7 +345,10 @@ static void sched_tick_thread() {
         for (int core = 0; core < 3; core++) {
             CoreSched& k = g_sched[core];
             std::lock_guard<std::mutex> lk(k.m);
-            if (k.owner && !k.ready.empty() && should_yield(k, k.owner)) g_core_preempt[core] = 1;
+            if (k.owner && !k.ready.empty() && should_yield(k, k.owner)) {
+                g_core_preempt[core] = 1;
+                set_cpu_preempt(k.owner->cpu, true);
+            }
         }
     }
 }
@@ -1271,6 +1293,10 @@ bool quiesce(int timeout_ms, std::string& busy, int entry_mode, int entry_after_
         if (entry_mode && std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(entry_after_ms)) {
             g_entry_parks = entry_mode;
             for (int k = 0; k < 3; k++) g_core_preempt[k] = 1;  // running threads look at their next function entry
+            {
+                std::lock_guard<std::mutex> lk(g_threads_mutex);
+                for (auto& [g, t] : g_threads) set_cpu_preempt(t->cpu, true);
+            }
         }
         busy.clear();
         {

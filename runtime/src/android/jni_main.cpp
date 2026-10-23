@@ -288,7 +288,7 @@ JNI_FN(jbyteArray, parseKey)(JNIEnv* env, jclass, jbyteArray data) {
 #include "../recomp/compile.h"
 #include "../recomp/locals.h"
 extern "C" const char wwhd_ops_bc[], wwhd_ops_bc_end[], wwhd_hooks[], wwhd_hooks_end[];  // recomp_data.S
-extern "C" const char wwhd_hot_functions[], wwhd_hot_functions_end[];
+extern "C" const char wwhd_hot[], wwhd_hot_end[], wwhd_covered[], wwhd_covered_end[];
 
 #ifdef WWHD_DEVICE_RECOMP
 #include "../recomp/loader.h"
@@ -298,21 +298,22 @@ static std::atomic<size_t> g_compile_done{0}, g_compile_total{0};
 static std::atomic<bool> g_compile_cancel{false};
 
 // recompiles the game with LLVM on the device into `outDir`, logging time and memory; "" or why not
-static std::string compile_code(const std::string& gameDir, const std::string& outDir, bool resume) {
+static std::string compile_code(const std::string& gameDir, const std::string& outDir, std::vector<std::string>& objects) {
     recomp::CompileOptions opt;
     opt.rpxPath = gameDir + "/code/cking.rpx";
     opt.opsBitcode.assign(wwhd_ops_bc, wwhd_ops_bc_end);
     opt.hooksText.assign(wwhd_hooks, wwhd_hooks_end);
-    opt.hotList.assign(wwhd_hot_functions, wwhd_hot_functions_end);  // (part of the code cache key, loader.cpp)
-    if (const char* h = getenv("WWHD_RECOMPILE_HOT")) {  // testing: another list (not in the key: clear the code cache)
+    opt.hotText.assign(wwhd_hot, wwhd_hot_end);  // (both lists are part of the code cache key, loader.cpp)
+    opt.coveredText.assign(wwhd_covered, wwhd_covered_end);
+    if (const char* h = getenv("WWHD_RECOMPILE_COVERED")) {  // testing: another list
         std::ifstream f(h);
         std::stringstream ss;
         ss << f.rdbuf();
-        opt.hotList = ss.str();
+        opt.coveredText = ss.str();
     }
     if (const char* c = getenv("WWHD_RECOMPILE_COLD_OPT")) opt.coldOptLevel = atoi(c);
     opt.outDir = outDir;
-    opt.keepExisting = resume;
+    opt.baseKey = recomp::code_base_key(opt.rpxPath);  // (objects are named by a hash of this and their code)
     // about 500 MB per job at most; 4 is the fastest on 8-core big.LITTLE phones (Galaxy S20 FE: 442 s
     // with 3, 363 s with 4, 471 s with 6, the phone at its thermal limit), and fewer when memory is short
     // (what Android reports available now, not the total: a 6 GB phone used to get only 3)
@@ -347,7 +348,7 @@ static std::string compile_code(const std::string& gameDir, const std::string& o
             LOG("[recomp] %zu of %zu modules done, peak memory %ld MB", g_compile_done.load(), g_compile_total.load(), ru.ru_maxrss / 1024);
         }
     });
-    LOG("[recomp] compiling with %u jobs at -O%d%s", opt.jobs, opt.optLevel, resume ? ", resuming" : "");
+    LOG("[recomp] compiling with %u jobs at -O%d", opt.jobs, opt.optLevel);
     recomp::CompileResult res;
     std::string err;
     bool ok = recomp::compile_game(opt, res, err);
@@ -355,9 +356,11 @@ static std::string compile_code(const std::string& gameDir, const std::string& o
     progress.join();
     struct rusage ru;
     getrusage(RUSAGE_SELF, &ru);
-    LOG("[recomp] %s: %zu functions (%zu cold), %zu modules, %zu instructions in %.1f s, peak memory %ld MB; registers in locals: %zu "
-        "functions, %zu kept in the struct (%s)%s%s", ok ? "done" : "FAILED", res.functions, res.coldFunctions, res.modules, res.instructions,
-        res.seconds, ru.ru_maxrss / 1024, res.localized, res.localFallback, recomp::code_switches().c_str(), ok ? "" : ": ", ok ? "" : err.c_str());
+    objects = res.objects;
+    LOG("[recomp] %s: %zu functions (%zu cold), %zu modules (%zu compiled now), %zu instructions in %.1f s, peak memory %ld MB; registers in "
+        "locals: %zu functions, %zu kept in the struct (%s)%s%s", ok ? "done" : "FAILED", res.functions, res.coldFunctions, res.modules,
+        res.compiled, res.instructions, res.seconds, ru.ru_maxrss / 1024, res.localized, res.localFallback, recomp::code_switches().c_str(),
+        ok ? "" : ": ", ok ? "" : err.c_str());
     return ok ? "" : err.empty() ? "failed" : err;
 }
 #endif
@@ -377,9 +380,10 @@ JNI_FN(jstring, compileGame)(JNIEnv* env, jclass, jstring gameDir, jstring codeD
     std::string game = jstr(env, gameDir), dir = jstr(env, codeDir);
     std::string key = recomp::code_cache_key(game + "/code/cking.rpx");
     if (key.empty()) return env->NewStringUTF("cannot read the game executable");
-    bool resume = recomp::begin_code_cache(dir, key);
-    std::string err = compile_code(game, dir, resume);
-    if (err.empty()) recomp::finish_code_cache(dir, key, err);
+    recomp::begin_code_cache(dir);  // (an interrupted compile's objects are kept: named by their content)
+    std::vector<std::string> objects;
+    std::string err = compile_code(game, dir, objects);
+    if (err.empty()) recomp::finish_code_cache(dir, key, objects, err);
     return err.empty() ? nullptr : env->NewStringUTF(err.c_str());
 }
 
@@ -413,7 +417,10 @@ JNI_FN(void, start)(JNIEnv* env, jclass, jstring gameDir, jstring saveDir, jstri
     if (getenv("WWHD_RECOMPILE_TEST")) {
         // measuring the first-start compile instead of starting the game
         std::string cache = jstr(env, cacheDir);
-        std::thread(compile_code, jstr(env, gameDir), cache.substr(0, cache.find_last_of('/')) + "/codecache", false).detach();
+        std::thread([game = jstr(env, gameDir), dir = cache.substr(0, cache.find_last_of('/')) + "/codecache"] {
+            std::vector<std::string> objects;
+            compile_code(game, dir, objects);
+        }).detach();
         return;
     }
 #endif

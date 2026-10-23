@@ -38,8 +38,9 @@ int main(int argc, char** argv) {
     opt.cpu = getenv("RECOMP_HOST_CPU") ? "" : "generic";  // RECOMP_HOST_CPU=1 on a phone: the app's own target
     if (const char* o = getenv("RECOMP_OPT")) opt.optLevel = atoi(o);
     if (const char* o = getenv("RECOMP_COLD_OPT")) opt.coldOptLevel = atoi(o);
-    opt.keepExisting = getenv("RECOMP_KEEP") != nullptr;  // only the modules without an object file
-    if (const char* h = getenv("RECOMP_HOT")) opt.hotList = slurp(h);  // a hot_functions.txt
+    opt.hotText = slurp(std::string(argv[3]) + "/hot_functions.txt");
+    opt.coveredText = slurp(std::string(argv[3]) + "/covered_functions.txt");
+    if (const char* h = getenv("RECOMP_COVERED")) opt.coveredText = slurp(h);  // another covered_functions.txt
     if (argc > 5) opt.perModule = strtoul(argv[5], nullptr, 10);
     if (argc > 6) opt.jobs = (unsigned)strtoul(argv[6], nullptr, 10);
     recomp::CompileResult res;
