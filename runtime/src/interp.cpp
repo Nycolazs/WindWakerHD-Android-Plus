@@ -1143,10 +1143,14 @@ namespace mods { void cheats_service(); }  // mods/cheats.cpp
 static std::atomic<bool> g_menu_open{false};
 static uint64_t g_play_draw_step = 0;
 namespace interp {
-// the hybrid layout shows the GamePad: a game menu is open (dMenu_flag), the Wind Waker's songs are up,
-// or no game is being played
-// (title, file select: the play scene's world step, true60.cpp site_025B00B0, has not run for 15 steps)
+// the hybrid layout shows the GamePad full screen: a game menu is open (dMenu_flag), or no game is being played
+// (title, file select: no save file loaded and the play scene's world step, true60.cpp site_025B00B0, has not run for
+// 15 steps). Loading screens and scene changes with a file loaded don't count: the GamePad flashed over every door
+// (issue #28). The Wind Waker's songs (baton_up) get the GamePad as an inset over the TV instead: full screen it hid
+// Link and the song's notes on the TV (issue #24).
+static std::atomic<bool> g_baton_up{false};
 bool menu_open() { return g_menu_open.load(std::memory_order_relaxed); }
+bool baton_up() { return g_baton_up.load(std::memory_order_relaxed); }
 void note_play_draw() { g_play_draw_step = g_logic_steps; }
 }  // namespace interp
 static void menu30_update() {
@@ -1158,10 +1162,15 @@ static void menu30_update() {
     const uint32_t link = true60::link();
     const uint32_t proc = link >= 0x10000000u && link < 0x50000000u ? ld32(link + 0x65F0) : 0;
     const bool baton = proc >= 0x9A && proc <= 0x9D;
-    const bool gamepad = menu || baton || g_logic_steps > g_play_draw_step + 15;
-    if (gamepad != g_menu_open.load(std::memory_order_relaxed)) {
-        g_menu_open.store(gamepad, std::memory_order_relaxed);
-        LOG("[interp] %s", gamepad ? (menu ? "menu open" : baton ? "Wind Waker songs" : "no game in play") : "game in play");
+    const bool idle = g_logic_steps > g_play_draw_step + 15;  // (no world step: the title, a load, a scene change)
+    const bool gamepad = menu || baton || idle;  // (the 40 fps fix below: every one of them)
+    const uint32_t sv = mods::save_addr();
+    const bool noGame = idle && !(sv >= 0x10000000u && mods::save_loaded(sv));
+    const bool full = menu || noGame;
+    if (full != g_menu_open.load(std::memory_order_relaxed) || baton != g_baton_up.load(std::memory_order_relaxed)) {
+        g_menu_open.store(full, std::memory_order_relaxed);
+        g_baton_up.store(baton, std::memory_order_relaxed);
+        LOG("[interp] %s", full ? (menu ? "menu open" : "no game in play") : baton ? "Wind Waker songs" : "game in play");
     }
     bool on = false;
     if (g_mode40.load(std::memory_order_relaxed) && interp_on()) {

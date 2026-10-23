@@ -476,8 +476,9 @@ JNI_FN(void, setLayout)(JNIEnv* env, jclass, jfloatArray tv, jfloatArray drc, jb
     gfx::set_layout(t, d, drcVisible);
 }
 
-namespace interp { bool menu_open(); }
+namespace interp { bool menu_open(); bool baton_up(); }
 JNI_FN(jboolean, menuOpen)(JNIEnv*, jclass) { return interp::menu_open(); }  // hybrid layout (MainActivity)
+JNI_FN(jboolean, batonUp)(JNIEnv*, jclass) { return interp::baton_up(); }    // ... the GamePad as an inset
 
 JNI_FN(void, setPad)(JNIEnv*, jclass, jint buttons, jfloat lx, jfloat ly, jfloat rx, jfloat ry) {
     input::set_pad((uint32_t)buttons, lx, ly, rx, ry);

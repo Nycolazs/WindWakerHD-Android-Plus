@@ -1553,7 +1553,11 @@ bool present_frame() {
     VkResult r;
     {
         std::lock_guard<std::mutex> sl(R.swapchainMutex);
-        r = vkAcquireNextImageKHR(R.device, g_sc.sc, 100 * 1000000ull, acquire, VK_NULL_HANDLE, &idx);
+        // Fast Forward (mods/turbo.cpp): no wait for a window image - a FIFO swapchain (frame generation's) shows at most
+        // one picture per refresh, and waiting for it held the game's 3x / 4x to the display's rate (as the original
+        // project's #268): a step without a free image is simply not shown
+        r = vkAcquireNextImageKHR(R.device, g_sc.sc, g_fast_forward.load(std::memory_order_relaxed) ? 0 : 100 * 1000000ull, acquire,
+                                  VK_NULL_HANDLE, &idx);
     }
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_TIMEOUT || r == VK_NOT_READY || r < 0) {
         if (r != VK_TIMEOUT && r != VK_NOT_READY) g_sc.stale = true;
@@ -1747,7 +1751,8 @@ bool fg_present(const Image* img) {
     VkResult r;
     {
         std::lock_guard<std::mutex> sl(R.swapchainMutex);
-        r = vkAcquireNextImageKHR(R.device, g_sc.sc, 100 * 1000000ull, ps.acquire, VK_NULL_HANDLE, &idx);
+        r = vkAcquireNextImageKHR(R.device, g_sc.sc, g_fast_forward.load(std::memory_order_relaxed) ? 0 : 100 * 1000000ull,
+                                  ps.acquire, VK_NULL_HANDLE, &idx);  // (Fast Forward: as present above)
     }
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_TIMEOUT || r == VK_NOT_READY || r < 0) {
         if (r != VK_TIMEOUT && r != VK_NOT_READY) g_sc.stale = true;

@@ -21,6 +21,7 @@ bool mode40();
 void set_mode40(bool v);
 int vsync_rate();           // ticks of the virtual vsync per 59.94 Hz period (gx2_core.cpp)
 bool menu_open();           // a game menu is open or no game is in play (hybrid layout)
+bool baton_up();            // the Wind Waker's songs: the GamePad as an inset (hybrid layout)
 
 // "Keep game speed": in-between frames that do not fit are skipped instead of slowing the game down;
 // one setting for 60 fps and one for 120/240 fps

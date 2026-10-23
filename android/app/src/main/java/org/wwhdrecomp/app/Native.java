@@ -72,6 +72,7 @@ final class Native {
     static native void setLayout(float[] tv, float[] drc, boolean drcVisible);
     /** a game menu is open (hybrid layout: the GamePad is shown full screen then) */
     static native boolean menuOpen();
+    static native boolean batonUp();  // the Wind Waker's songs (hybrid layout: the GamePad as an inset)
 
     static native void setPad(int buttons, float lx, float ly, float rx, float ry);
     /** Touch on the GamePad screen, 0..1 from the top left. */

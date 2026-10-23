@@ -1058,7 +1058,7 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
     // on a single screen). With the Pro Controller the layout is TV only (the GamePad is set aside).
     // Polled, as the game opens and closes menus and its controller select screen switches the controls
     // (hle/padscore.cpp).
-    private boolean hybridMenu, layoutPro;
+    private boolean hybridMenu, hybridBaton, layoutPro;
     private final Runnable layoutPoll = new Runnable() {
         @Override public void run() {
             if (controls == null) return;
@@ -1066,8 +1066,10 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
             boolean pro = Native.getOption("pro_controller") != 0;
             boolean hybrid = !pro && prefs.getInt("layout", LAYOUT_INSET) == LAYOUT_HYBRID;
             boolean m = hybrid && menu;
-            if (pro != layoutPro || m != hybridMenu) {
+            boolean b = hybrid && !menu && Native.batonUp();
+            if (pro != layoutPro || m != hybridMenu || b != hybridBaton) {
                 hybridMenu = m;
+                hybridBaton = b;
                 updateLayout();
             } else {
                 controls.postDelayed(this, 100);
@@ -1102,9 +1104,9 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
                 drc = full;
                 tv = inset;
                 break;
-            case LAYOUT_HYBRID:  // the GamePad is drawn over the TV
+            case LAYOUT_HYBRID:  // the GamePad is drawn over the TV: full screen in menus, an inset for the Wind Waker's songs
                 tv = full;
-                drc = hybridMenu ? full : null;
+                drc = hybridMenu ? full : hybridBaton ? inset : null;
                 break;
             default:
                 tv = full;
