@@ -410,6 +410,8 @@
     <string name="opt_drc_display_hint">Se encontró una segunda pantalla (p. ej. la pantalla inferior de un dispositivo de doble pantalla)</string>
     <string name="drc_second_display">Segunda pantalla</string>
     <string name="drc_in_layout">En el diseño de pantalla</string>
+    <string name="opt_drc_aspect">Relación de aspecto del GamePad</string>
+    <string name="opt_drc_aspect_hint">Estirar a la pantalla: la imagen del GamePad ocupa toda la segunda pantalla, sin barras; cambian sus proporciones</string>
     <string name="opt_gpu_driver">Controlador de GPU</string>
     <string name="opt_gpu_driver_hint">El del sistema, o un paquete de controlador instalado</string>
     <string name="gpu_driver_about">En GPU Adreno el juego puede usar otro controlador Vulkan distinto del del sistema, por ejemplo una compilación de Mesa Turnip o un controlador Qualcomm más nuevo. Usa paquetes de controlador en formato AdrenoTools (un .zip con meta.json y el controlador), como los usan otros emuladores. Un controlador nuevo se aplica tras reiniciar. Si el juego no arranca con él, el próximo inicio vuelve al del sistema.</string>

@@ -427,6 +427,8 @@
     <string name="opt_drc_display_hint">A second display was found (e.g. the lower screen of a dual-screen device)</string>
     <string name="drc_second_display">Second display</string>
     <string name="drc_in_layout">In the screen layout</string>
+    <string name="opt_drc_aspect">GamePad aspect ratio</string>
+    <string name="opt_drc_aspect_hint">Stretch to screen: the GamePad picture covers the whole second display, without bars; its proportions change</string>
     <string name="opt_gpu_driver">GPU driver</string>
     <string name="opt_gpu_driver_hint">The system\'s, or an installed driver package</string>
     <string name="gpu_driver_about">On Adreno GPUs the game can run on another Vulkan driver than the system\'s, for example a Mesa Turnip build or a newer Qualcomm driver. Use driver packages in the AdrenoTools format (a .zip with meta.json and the driver), as other emulators use them. A new driver applies after a restart. If the game doesn\'t start with it, the next start goes back to the system driver.</string>
