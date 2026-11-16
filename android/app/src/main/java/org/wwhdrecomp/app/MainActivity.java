@@ -1049,8 +1049,18 @@ public final class MainActivity extends Activity implements SurfaceHolder.Callba
         updateDrcDisplay();
     }
 
+    // the picture's shape there, the option "GamePad aspect ratio": 0 = 16:9 with bars (as the WiiU
+    // GamePad), 1 = stretched over the whole display
+    int drcAspect() { return prefs.getInt("drc_aspect", 0); }
+
+    void setDrcAspect(int mode) {
+        prefs.edit().putInt("drc_aspect", mode).apply();
+        updateDrcDisplay();
+    }
+
     private void updateDrcDisplay() {
         if (drcDisplay == null) drcDisplay = new DrcDisplay(this, active -> updateLayout());
+        drcDisplay.setStretch(drcAspect() == 1);
         drcDisplay.setWanted(started && resumed && drcOnSecondDisplay());
     }
 

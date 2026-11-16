@@ -567,6 +567,12 @@ final class OptionsMenu extends Dialog {
             String[] where = {a.getString(R.string.drc_second_display), a.getString(R.string.drc_in_layout)};
             choice(R.string.opt_drc_display, R.string.opt_drc_display_hint, where, a.drcOnSecondDisplay() ? 0 : 1,
                     i -> a.setDrcOnSecondDisplay(i == 0));
+            if (a.drcOnSecondDisplay()) {
+                // the picture's shape there: 16:9 with bars or stretched (the first two of the TV picture's modes)
+                String[] shapes = java.util.Arrays.copyOf(a.getResources().getStringArray(R.array.aspect_modes), 2);
+                indentNext = true;  // a setting of the option above
+                choice(R.string.opt_drc_aspect, R.string.opt_drc_aspect_hint, shapes, a.drcAspect(), a::setDrcAspect);
+            }
         }
         choice(R.string.opt_layout, 0, a.getResources().getStringArray(R.array.layouts), a.prefs.getInt("layout", MainActivity.LAYOUT_INSET), i -> {
             a.prefs.edit().putInt("layout", i).apply();

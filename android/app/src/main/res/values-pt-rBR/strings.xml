@@ -419,6 +419,8 @@
     <string name="opt_drc_display_hint">Uma segunda tela foi encontrada (por exemplo a tela de baixo de um aparelho com duas telas)</string>
     <string name="drc_second_display">Segunda tela</string>
     <string name="drc_in_layout">No layout da tela</string>
+    <string name="opt_drc_aspect">Proporção do GamePad</string>
+    <string name="opt_drc_aspect_hint">Esticar na tela: a imagem do GamePad ocupa toda a segunda tela, sem barras; as proporções mudam</string>
     <string name="opt_gpu_driver">Driver da GPU</string>
     <string name="opt_gpu_driver_hint">O do sistema, ou um pacote de driver instalado</string>
     <string name="gpu_driver_about">Em GPUs Adreno o jogo pode rodar com outro driver Vulkan além do do sistema, por exemplo um Mesa Turnip ou um driver Qualcomm mais novo. Use pacotes de driver no formato AdrenoTools (um .zip com meta.json e o driver), como outros emuladores usam. Um driver novo vale após reiniciar. Se o jogo não iniciar com ele, o próximo início volta para o driver do sistema.</string>
